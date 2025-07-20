@@ -7,6 +7,7 @@
 // @match        https://wdrb.work/otherside/*
 // @match        http://wdrb.work/otherside/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=wdrb.work
+// @updateURL    https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/%E5%8C%97%E3%82%A2%E3%82%B6%E3%83%96%E3%82%AF%E3%83%9E%E6%8B%A1%E5%BC%B5.user.js
 // @require      https://code.jquery.com/jquery-3.7.1.min.js
 // @require      https://code.jquery.com/ui/1.13.3/jquery-ui.min.js
 // @grant        GM_addStyle
