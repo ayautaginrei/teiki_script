@@ -4,7 +4,7 @@
 // @version      1.0
 // @description  踏破数表示、前回と同じ設定で挑戦、戦闘設定の自動絞り込みなど
 // @author       ayautaginrei(gemini)
-// @updateURL
+// @updateURL    https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/BO5%E3%82%A2%E3%83%BC%E3%82%B1%E3%83%BC%E3%83%89%E3%83%98%E3%83%AB%E3%83%91%E3%83%BC.user.js
 // @match        https://wdrb.work/bo5/battle_lobby.php?mode=arcade
 // @grant        none
 // ==/UserScript==
