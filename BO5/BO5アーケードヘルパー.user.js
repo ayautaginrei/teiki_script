@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BO5アーケードヘルパー
 // @namespace    http://tampermonkey.net/
-// @version      1.1
+// @version      1.2
 // @description  踏破数表示、前回と同じ設定で挑戦、戦闘設定の自動絞り込みなど
 // @author       ayautaginrei(gemini)
 // @updateURL    https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/BO5%E3%82%A2%E3%83%BC%E3%82%B1%E3%83%BC%E3%83%89%E3%83%98%E3%83%AB%E3%83%91%E3%83%BC.user.js
@@ -60,18 +60,14 @@
         const originalStartButton = form.querySelector('input.bt_start');
         const anchor = form.querySelector('ul.battle_npc');
         if (!originalStartButton || !anchor || document.getElementById('cloned-start-button-container')) return;
-
         const clonedButton = originalStartButton.cloneNode(true);
         clonedButton.id = 'cloned-start-button';
         Object.assign(clonedButton.style, { display: 'inline-block', width: 'auto', padding: '8px 16px', marginTop: '10px' });
-
         const buttonContainer = document.createElement('div');
         buttonContainer.id = 'cloned-start-button-container';
         Object.assign(buttonContainer.style, { marginBottom: '20px', textAlign: 'center' });
         buttonContainer.appendChild(clonedButton);
-
         anchor.parentNode.insertBefore(buttonContainer, anchor.nextSibling);
-
         const observer = new MutationObserver((mutations) => {
             mutations.forEach((mutation) => {
                 if (mutation.type === 'attributes') {
@@ -151,23 +147,33 @@
         const equipList = form.querySelector('ul.battle_style');
         const filterInput = document.getElementById('drilldown');
         if (!equipList || !filterInput) return;
+
         const observerOptions = { subtree: true, attributes: true, attributeFilter: ['class'] };
+
         const observer = new MutationObserver(() => {
             observer.disconnect();
+
             const searchTerm = filterInput.value.trim();
             const initiallyVisibleItems = equipList.querySelectorAll('li:not(.drilldown)');
+
             if (searchTerm) {
                 const regex = new RegExp(`^(UN)?${searchTerm}(\\d+%)?$`);
                 const exactMatchItems = [];
+
                 initiallyVisibleItems.forEach(item => {
                     const content = item.dataset.tippyContent || '';
-                    const words = content.split(/[・\s\t]+/);
-                    if (words.some(word => regex.test(word))) {
+                    const words = content.split(/[・\s\t\/／]+/);
+
+                    if (words.some(word => {
+                        const cleanedWord = word.replace(/[()（）]/g, '');
+                        return regex.test(cleanedWord);
+                    })) {
                         exactMatchItems.push(item);
                     } else {
                         item.classList.add('drilldown');
                     }
                 });
+
                 if (exactMatchItems.length === 1) {
                     const singleItem = exactMatchItems[0];
                     if (!singleItem.classList.contains('select')) {
@@ -175,8 +181,10 @@
                     }
                 }
             }
+
             observer.observe(equipList, observerOptions);
         });
+
         observer.observe(equipList, observerOptions);
     }
 
