@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BO5アーケードヘルパー
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.1
 // @description  踏破数表示、前回と同じ設定で挑戦、戦闘設定の自動絞り込みなど
 // @author       ayautaginrei(gemini)
 // @updateURL    https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/BO5%E3%82%A2%E3%83%BC%E3%82%B1%E3%83%BC%E3%83%89%E3%83%98%E3%83%AB%E3%83%91%E3%83%BC.user.js
@@ -12,7 +12,6 @@
 (function() {
     'use strict';
 
-    // フィルターモードの宣言。初期値はここで設定せず、各画面の処理で決定する。
     let currentFilterMode;
 
     setTimeout(init, 500);
@@ -47,37 +46,32 @@
         setupWeaponCounter(form);
     }
 
-    /**
-     * 挑戦中画面の処理
-     */
     function handleInBattleScreen(form) {
-        // --- EX BATTLEかどうかを判定 ---
         const isExBattle = !!Array.from(form.querySelectorAll('h5')).find(h => h.textContent.includes('CHALLENGER APPROACHING'));
+        currentFilterMode = isExBattle ? 'name' : 'weapon';
 
-        if (isExBattle) {
-            currentFilterMode = 'name'; // EX BATTLEなら「名前」
-        } else {
-            currentFilterMode = 'weapon'; // 通常なら「武器」
-        }
-
-        // 既存の機能呼び出し
         duplicateStartButton(form);
         createFilterToggle(form);
         setupFighterClickFiltering(form);
+        setupAutoSelectListener(form);
     }
 
     function duplicateStartButton(form) {
         const originalStartButton = form.querySelector('input.bt_start');
-        const anchor = form.querySelector('div.equip');
+        const anchor = form.querySelector('ul.battle_npc');
         if (!originalStartButton || !anchor || document.getElementById('cloned-start-button-container')) return;
+
         const clonedButton = originalStartButton.cloneNode(true);
         clonedButton.id = 'cloned-start-button';
-        Object.assign(clonedButton.style, { display: 'inline-block', width: 'auto', padding: '8px 16px' });
+        Object.assign(clonedButton.style, { display: 'inline-block', width: 'auto', padding: '8px 16px', marginTop: '10px' });
+
         const buttonContainer = document.createElement('div');
         buttonContainer.id = 'cloned-start-button-container';
         Object.assign(buttonContainer.style, { marginBottom: '20px', textAlign: 'center' });
         buttonContainer.appendChild(clonedButton);
-        anchor.parentNode.insertBefore(buttonContainer, anchor);
+
+        anchor.parentNode.insertBefore(buttonContainer, anchor.nextSibling);
+
         const observer = new MutationObserver((mutations) => {
             mutations.forEach((mutation) => {
                 if (mutation.type === 'attributes') {
@@ -126,7 +120,7 @@
         toggleContainer.appendChild(nameToggle);
         toggleContainer.appendChild(weaponToggle);
         fighterList.parentNode.insertBefore(toggleContainer, fighterList);
-        updateToggleVisuals(); // 初期表示を更新
+        updateToggleVisuals();
     }
 
     function setupFighterClickFiltering(form) {
@@ -153,7 +147,39 @@
         });
     }
 
-    // --- ロビー画面用の各機能 ---
+    function setupAutoSelectListener(form) {
+        const equipList = form.querySelector('ul.battle_style');
+        const filterInput = document.getElementById('drilldown');
+        if (!equipList || !filterInput) return;
+        const observerOptions = { subtree: true, attributes: true, attributeFilter: ['class'] };
+        const observer = new MutationObserver(() => {
+            observer.disconnect();
+            const searchTerm = filterInput.value.trim();
+            const initiallyVisibleItems = equipList.querySelectorAll('li:not(.drilldown)');
+            if (searchTerm) {
+                const regex = new RegExp(`^(UN)?${searchTerm}(\\d+%)?$`);
+                const exactMatchItems = [];
+                initiallyVisibleItems.forEach(item => {
+                    const content = item.dataset.tippyContent || '';
+                    const words = content.split(/[・\s\t]+/);
+                    if (words.some(word => regex.test(word))) {
+                        exactMatchItems.push(item);
+                    } else {
+                        item.classList.add('drilldown');
+                    }
+                });
+                if (exactMatchItems.length === 1) {
+                    const singleItem = exactMatchItems[0];
+                    if (!singleItem.classList.contains('select')) {
+                        singleItem.click();
+                    }
+                }
+            }
+            observer.observe(equipList, observerOptions);
+        });
+        observer.observe(equipList, observerOptions);
+    }
+
     function createRetryButton(form, container, bet, weaponId) {
         const retryButton = createStyledButton('前回と同じ武器で再挑戦');
         retryButton.addEventListener('click', () => {
