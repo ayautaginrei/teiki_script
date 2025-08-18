@@ -1,9 +1,10 @@
 // ==UserScript==
 // @name         ニワGFRe マッピングヘルパー
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.1
 // @description  ニワGFReのマップ情報をスプレッドシートに対応した形式でコピーし、貼り付け座標も通知します。
 // @author       ayautaginrei(gemini)
+// @updateURL    https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/soraniwa/%E3%83%8B%E3%83%AFGFRe%20%E3%83%9E%E3%83%83%E3%83%94%E3%83%B3%E3%82%B0%E3%83%98%E3%83%AB%E3%83%91%E3%83%BC.user.js
 // @match        https://soraniwa.428.st/gf/*
 // @grant        none
 // ==/UserScript==
@@ -13,11 +14,20 @@
 
     // カラーコードと番号の対応表
     const COLOR_TO_NUMBER_MAP = {
-        '#bbbbbb': 1,  '#eedd99': 2,  '#55bb55': 3,  '#88dd77': 3,
-        '#ffee44': 4,  '#55ccee': 5,  '#228b22': 6,  '#33aa33': 6,
-        '#906030': 7,  '#99ccff': 8,  '#1166dd': 9,  '#555566': 10,
-        '#44dddd': 11, '#dd5522': 12, '#305020': 13, '#ff00ff': 0,
-        '#221005': 0
+        '#bbbbbb': 1,
+        '#eedd99': 2,
+        '#55bb55': 3, '#88dd77': 3,
+        '#ffee44': 4,
+        '#55ccee': 5, '#44aaee': 5,
+        '#228b22': 6, '#33aa33': 6,
+        '#906030': 7,
+        '#99ccff': 8,
+        '#1166dd': 9, '#2288dd': 9,
+        '#555566': 10,
+        '#44dddd': 11,
+        '#dd5522': 12,
+        '#305020': 13,
+        '#ff00ff': 0, '#221005': 0
     };
 
     // RGBをHEXに変換する関数
