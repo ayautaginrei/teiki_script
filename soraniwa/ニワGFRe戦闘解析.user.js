@@ -5,7 +5,7 @@
 // @description  Stroll Greenの戦闘ログに動的なステータスパネルを追加し、キャラクター個別の戦闘統計・グラフを自動表示します。
 // @author       ayautaginrei(gemini)
 // @match        https://soraniwa.428.st/gf/result/*
-// @updateURL
+// @updateURL    https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/soraniwa/%E3%83%8B%E3%83%AFGFRe%E6%88%A6%E9%97%98%E8%A7%A3%E6%9E%90.user.js
 // @require      https://cdn.jsdelivr.net/npm/chart.js
 // @grant        GM_addStyle
 // @run-at       document-idle
