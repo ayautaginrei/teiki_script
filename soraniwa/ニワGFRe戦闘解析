@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         Stroll Green GFRe - 戦闘解析
+// @name         ニワGFRe戦闘解析
 // @namespace    http://tampermonkey.net/
 // @version      1.0
 // @description  Stroll Greenの戦闘ログに動的なステータスパネルを追加し、キャラクター個別の戦闘統計・グラフを自動表示します。
