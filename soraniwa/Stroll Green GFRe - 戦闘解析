@@ -1,0 +1,612 @@
+// ==UserScript==
+// @name         Stroll Green GFRe - 戦闘解析
+// @namespace    http://tampermonkey.net/
+// @version      1.0
+// @description  Stroll Greenの戦闘ログに動的なステータスパネルを追加し、キャラクター個別の戦闘統計・グラフを自動表示します。
+// @author       ayautaginrei(gemini)
+// @match        https://soraniwa.428.st/gf/result/*
+// @updateURL
+// @require      https://cdn.jsdelivr.net/npm/chart.js
+// @grant        GM_addStyle
+// @run-at       document-idle
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    // --- 全体の設定 ---
+    const SCRIPT_ID = 'sg-dynamic-status-script';
+    const THROTTLE_DELAY = 100;
+    const HIDE_PANELS_BREAKPOINT = 1600;
+
+    // --- 状態異常データ ---
+    const statusDetails = {
+        '祝福': { type: 'buff', base: 45, scale: 2, unit: '%', desc: '攻撃力と回復力が上がります。' },
+        '加護': { type: 'buff', base: 45, scale: 2, unit: '%', desc: '防御力と抵抗力が上がります。' },
+        '幸運': { type: 'buff', desc: '会心力、回避力、命中力が上がります。また、会心威力が上昇します。' },
+        '軽減': { type: 'buff', desc: '炎上・凍結・猛毒・出血で受けるダメージが減ります。また、受けるペナルティダメージが85%軽減されます。' },
+        '浮遊': { type: 'buff', desc: '列を指定する効果の対象から外れます。' },
+        '防護': { type: 'buff', desc: '受けるダメージを1深度あたり一定量減らします。ダメージを0にするか深度が0になるまで軽減を試みます。また、HP1以下になりません。' },
+        '反撃': { type: 'buff', desc: '攻撃を受けると反撃の通常行動をすることがあります。回避したときは必ず発動します。' },
+        '予撃': { type: 'buff', desc: 'スキルを発動する前に通常行動をすることがあります。ターンの1行動目のみ必ず発動します。' },
+        '治癒': { type: 'buff', desc: '行動後にHPが回復します。反撃などによる手番外でも発動します。効果量は深度1あたり2%加算されます。' },
+        '跳躍': { type: 'buff', desc: '受ける攻撃を確定で回避します。効果が発動するか、自分の手番の終了後に深度が0になります。' },
+        '反射': { type: 'buff', desc: '攻撃を受けたとき、相手に自分の防御力と回避力のうち最も高い値を参照した威力のダメージを与えます。' },
+        '猛毒': { type: 'debuff', desc: '受けるペナルティダメージが増加し、行動前に最大HPが減ります。ペナルティダメージは、ターン終了時にHPが満タンでない場合などにも発生する最大HPの減少です。効果量は深度1あたり1%加算されます。' },
+        '炎上': { type: 'debuff', desc: '行動後にHPが減ります。効果量は深度1あたり2%加算されます。' },
+        '凍結': { type: 'debuff', desc: '行動前にSPとMPが減ります。効果量は深度1あたり2%加算されます。' },
+        '脆弱': { type: 'debuff', desc: 'HP・SP・MPの自然回復量が減ります。' },
+        '混乱': { type: 'debuff', desc: 'スキルが意図せず発動することがあります。' },
+        '麻痺': { type: 'debuff', desc: '連続行動の発動が失敗することがあります。' },
+        '重力': { type: 'debuff', desc: '列を指定する効果の対象に含められます。' },
+        '炸裂': { type: 'debuff', desc: '受ける攻撃のダメージが上昇します。また、相手の防護状態を解除しやすくします。' },
+        '出血': { type: 'debuff', desc: '攻撃行動を行うと、そのたびに自身の攻撃力に依存したダメージを受けます。' },
+        '恐怖': { type: 'debuff', base: 30, scale: 2, unit: '%', desc: '攻撃力と回復力が下がります。(下限あり)' },
+        '呪縛': { type: 'debuff', base: 30, scale: 2, unit: '%', desc: '防御力と抵抗力が下がります。(下限あり)' },
+        '不幸': { type: 'debuff', base: 20, scale: 1, unit: '%', desc: '会心力、回避力、命中力、会心威力が下がります。(下限あり)' }
+    };
+
+    // --- CSSスタイルの定義 ---
+    GM_addStyle(`
+        :root {
+            --panel-bg-color: rgba(245, 245, 220, 0.92); --panel-border-color: #BDB76B;
+            --char-card-bg-color: rgba(238, 232, 205, 0.88); --hp-bar-color: #68B36B;
+            --sp-bar-color: #D2A100; --mp-bar-color: #5A95D6; --bar-bg-color: #8D8D8D;
+            --font-color: #3D3D3D; --name-color: #000; --tooltip-bg: rgba(0,0,0,0.85);
+            --stats-bg: #fdfdfa; --stats-border: #ccc; --stats-header-bg: #f1f1e6;
+        }
+        #sg-userscript-tooltip {
+            position: fixed; display: none; background-color: var(--tooltip-bg); color: white; padding: 8px 12px;
+            border-radius: 5px; font-size: 12px; max-width: 280px; z-index: 10000; pointer-events: none;
+            text-align: left;
+        }
+        #sg-userscript-tooltip strong { color: #FFD700; }
+        #sg-userscript-tooltip ul { margin: 5px 0 0 15px; padding: 0; }
+        #sg-userscript-tooltip li { margin-bottom: 2px; }
+        #sg-log-wrapper { display: flex; justify-content: center; align-items: flex-start; gap: 15px; }
+        #container { flex-shrink: 0; }
+        .status-panel { width: 260px; position: sticky; top: 20px; height: calc(100vh - 40px); overflow-y: auto; }
+        @media (max-width: ${HIDE_PANELS_BREAKPOINT - 1}px) { #left-status-panel, #right-status-panel { display: none; } }
+        .char-card-container {
+            background-color: var(--panel-bg-color); border: 1px solid var(--panel-border-color); border-radius: 8px;
+            box-shadow: 0 0 15px rgba(0,0,0,0.5); backdrop-filter: blur(5px); padding: 10px;
+        }
+        .char-card {
+            background-color: var(--char-card-bg-color); border-radius: 5px; padding: 8px; margin-bottom: 10px;
+            font-size: 12px; color: var(--font-color); transition: opacity 0.3s ease;
+        }
+        .char-card.defeated { opacity: 0.5; }
+        .char-header { display: flex; align-items: center; margin-bottom: 5px; }
+        .char-header img { width: 40px; height: 40px; border-radius: 50%; margin-right: 8px; border: 1px solid #777; }
+        .char-name { font-weight: bold; color: var(--name-color); font-size: 14px; }
+        .status-bar-container { width: 100%; background-color: var(--bar-bg-color); height: 10px; border-radius: 5px; margin-bottom: 2px; }
+        .status-bar { height: 100%; border-radius: 5px; transition: width 0.3s ease-in-out; }
+        .hp-bar { background-color: var(--hp-bar-color); }
+        .sp-bar { background-color: var(--sp-bar-color); }
+        .mp-bar { background-color: var(--mp-bar-color); }
+        .status-text { display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 4px; }
+        .char-states { margin-top: 5px; display: flex; flex-wrap: wrap; gap: 4px; }
+        .state-badge {
+            background-color: #FFFFF0; border: 1px solid #BDB76B; padding: 2px 5px;
+            border-radius: 10px; font-size: 10px; color: #3D3D3D; cursor: help;
+        }
+        #stats-container {
+            border: 1px solid var(--stats-border); border-radius: 8px; margin-top: 20px;
+            background: var(--stats-bg); padding: 15px;
+        }
+        .stats-tabs { border-bottom: 1px solid var(--stats-border); margin-bottom: 15px; }
+        .stats-tab-button {
+            padding: 8px 15px; border: 1px solid transparent; border-bottom: none;
+            cursor: pointer; background: none; font-size: 16px; margin-bottom: -1px;
+            border-top-left-radius: 5px; border-top-right-radius: 5px;
+        }
+        .stats-tab-button.active { background: var(--stats-bg); border-color: var(--stats-border); }
+        .stats-tab-content { display: none; }
+        .stats-tab-content.active { display: block; }
+        .stats-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        .stats-table th, .stats-table td { border: 1px solid var(--stats-border); padding: 6px; text-align: center; }
+        .stats-table th { background-color: var(--stats-header-bg); }
+        .stats-table .char-name-col { text-align: left; width: 140px; }
+        .stats-table .stp-cell { font-size: 11px; white-space: pre-wrap; line-height: 1.4; max-width: 150px; }
+        .stats-table .tooltip-cell { cursor: help; }
+        .stats-team-header { font-size: 1.2em; font-weight: bold; margin-top: 15px; margin-bottom: 5px; border-bottom: 2px solid var(--panel-border-color); }
+        .stats-team-header:first-child { margin-top: 0; }
+        .graph-controls { margin-bottom: 10px; text-align: center; }
+    `);
+
+    let scrollDataElements = [], allCharIndices = [], lastKnownState = {}, throttleTimer = null, chartInstance = null;
+    let finalHpValues = {};
+
+    function parseCharacterData(element) {
+        const characters = [];
+        element.querySelectorAll('i').forEach(i => characters.push({
+            index: i.dataset.index, cname: i.dataset.cname, team: i.dataset.team, icon: i.dataset.icon,
+            hp: parseInt(i.dataset.hp, 10), mhp: parseInt(i.dataset.mhp, 10),
+            sp: parseInt(i.dataset.sp, 10), msp: parseInt(i.dataset.msp, 10),
+            mp: parseInt(i.dataset.mp, 10), mmp: parseInt(i.dataset.mmp, 10),
+            states: i.dataset.states.trim().split(/\s+/).filter(s => s)
+        }));
+        return characters;
+    }
+
+    function setDefeatedStatus(charIndex, finalHp) {
+        const panel = document.getElementById(`char-card-${charIndex}`);
+        if (!panel) return;
+        if (panel.classList.contains('defeated') && panel.dataset.finalHp === finalHp.toString()) return;
+        const initialCharData = lastKnownState.initialData.find(c => c.index === charIndex);
+        const maxHP = initialCharData ? initialCharData.mhp : 0;
+
+        panel.classList.add('defeated');
+        panel.querySelector('.hp-bar').style.width = '0%';
+        panel.querySelector('.hp-text').textContent = `HP: ${finalHp} / ${maxHP}`;
+        panel.querySelector('.char-states').innerHTML = '<span class="state-badge">戦闘不能</span>';
+        panel.dataset.finalHp = finalHp;
+    }
+
+    function updateCharacterPanel(charData) {
+        const panel = document.getElementById(`char-card-${charData.index}`);
+        if (!panel) return;
+        panel.classList.remove('defeated');
+        panel.removeAttribute('data-final-hp');
+        panel.querySelector('.hp-bar').style.width = `${charData.mhp > 0 ? (Math.max(0, charData.hp) / charData.mhp) * 100 : 0}%`;
+        panel.querySelector('.hp-text').textContent = `HP: ${charData.hp} / ${charData.mhp}`;
+        panel.querySelector('.sp-bar').style.width = `${charData.msp > 0 ? (charData.sp / charData.msp) * 100 : 0}%`;
+        panel.querySelector('.sp-text').textContent = `SP: ${charData.sp}`;
+        panel.querySelector('.mp-bar').style.width = `${charData.mmp > 0 ? (charData.mp / charData.mmp) * 100 : 0}%`;
+        panel.querySelector('.mp-text').textContent = `MP: ${charData.mp}`;
+        const statesContainer = panel.querySelector('.char-states');
+        statesContainer.innerHTML = charData.states.map(state => {
+            const stateName = state.replace(/x\d+/, '');
+            return `<span class="state-badge" data-status-name="${stateName}">${state}</span>`;
+        }).join('');
+    }
+
+    function updateDynamicPanels() {
+        const scrollY = window.scrollY + 100;
+        let currentDataElement = scrollDataElements[0];
+        for (let i = 0; i < scrollDataElements.length; i++) {
+            if (scrollDataElements[i].offsetTop <= scrollY) {
+                currentDataElement = scrollDataElements[i];
+            } else { break; }
+        }
+        if (currentDataElement && currentDataElement.id !== lastKnownState.id) {
+            const characters = parseCharacterData(currentDataElement);
+            const currentCharIndices = characters.map(c => c.index);
+            characters.forEach(updateCharacterPanel);
+
+            const defeatedIndices = allCharIndices.filter(id => !currentCharIndices.includes(id));
+            defeatedIndices.forEach(id => {
+                const finalHp = finalHpValues[id] === undefined ? 0 : finalHpValues[id];
+                setDefeatedStatus(id, finalHp);
+            });
+            lastKnownState.id = currentDataElement.id;
+        }
+    }
+
+    function parseFullLog() {
+        const initialChars = parseCharacterData(document.querySelector('.scrolldata'));
+        const stats = {};
+        const turnData = { labels: [], datasets: {} };
+        let tempTurnStats = {};
+
+        initialChars.forEach(char => {
+            const name = char.cname;
+            stats[name] = {
+                team: char.team, damageDealt: 0, damageTaken: 0, healingDone: 0,
+                buffsApplied: 0, buffsReceived: 0, debuffsApplied: 0, debuffsReceived: 0,
+                totalStpGained: {}, lastStpValues: {},
+                buffsAppliedDetail: {}, buffsReceivedDetail: {},
+                debuffsAppliedDetail: {}, debuffsReceivedDetail: {},
+            };
+            turnData.datasets[name] = { team: char.team, hp: [], turnDamageDealt: [], turnDamageTaken: [], turnHealingDone: [] };
+            tempTurnStats[name] = { hp: char.hp, damageDealt: 0, damageTaken: 0, healingDone: 0 };
+        });
+
+        let currentActor = '', currentTurn = 1;
+
+        const recordTurnData = (turn) => {
+            const label = turn === 0 ? "Start" : `Turn ${turn}`;
+            if (turnData.labels.includes(label) && turn !== 0) return;
+            turnData.labels.push(label);
+            initialChars.forEach(c => {
+                const name = c.cname;
+                turnData.datasets[name].hp.push(tempTurnStats[name].hp);
+                turnData.datasets[name].turnDamageDealt.push(tempTurnStats[name].damageDealt);
+                turnData.datasets[name].turnDamageTaken.push(tempTurnStats[name].damageTaken);
+                turnData.datasets[name].turnHealingDone.push(tempTurnStats[name].healingDone);
+            });
+        };
+
+        recordTurnData(0);
+
+        // CHANGE: 全てのログ要素を順番に処理するようにループを修正
+        const battleLogContainer = document.querySelector('.battlemain');
+        if (!battleLogContainer) return { stats, characters: initialChars, turnData };
+
+        battleLogContainer.childNodes.forEach(node => {
+            if (node.nodeType !== 1) return; // Elementノード以外は無視
+
+            // HP/ステータス更新ブロックの処理
+            if (node.classList.contains('scrolldata')) {
+                const chars = parseCharacterData(node);
+                initialChars.forEach(initialChar => {
+                    const charInScroll = chars.find(c => c.cname === initialChar.cname);
+                    if (charInScroll) {
+                        tempTurnStats[initialChar.cname].hp = charInScroll.hp;
+                    }
+                });
+            }
+            // 行動ログブロックの処理
+            else if (node.classList.contains('sequence')) {
+                const text = node.textContent.trim();
+                let match;
+
+                if (match = text.match(/-Turn (\d+)-/)) {
+                    recordTurnData(currentTurn);
+                    currentTurn = parseInt(match[1], 10);
+                    initialChars.forEach(c => {
+                        const name = c.cname;
+                        tempTurnStats[name].damageDealt = 0;
+                        tempTurnStats[name].damageTaken = 0;
+                        tempTurnStats[name].healingDone = 0;
+                    });
+                }
+
+                if (match = text.match(/(.+) (を打倒した！！|は戦闘を離脱した！！)/)) {
+                    const target = match[1].trim();
+                    if (stats[target]) {
+                        tempTurnStats[target].hp = 0;
+                        const defeatedChar = initialChars.find(c => c.cname === target);
+                        if (defeatedChar) {
+                            finalHpValues[defeatedChar.index] = 0;
+                        }
+                    }
+                }
+
+                let actorNode = node.querySelector('a[id^="s_"]');
+                if (!actorNode) actorNode = node.querySelector('.markerB, .markerA');
+
+                if (actorNode && (actorNode.textContent.includes('の行動！') || actorNode.textContent.includes('の先行行動！'))) {
+                    currentActor = actorNode.textContent.replace(/[▼▼]/g, '').replace(/の行動！|の先行行動！/g, '').trim();
+                    if (stats[currentActor]) {
+                        const charStats = stats[currentActor];
+                        const currentStpValues = {};
+                        node.querySelectorAll('small > .type, small > .typesp').forEach(span => {
+                            const textContent = span.textContent;
+                            const nameMatch = textContent.match(/★([^\d%]+)/);
+                            const stpMatch = textContent.match(/(\d+(\.\d+)?)%/);
+                            if (nameMatch && stpMatch) {
+                                const typeName = nameMatch[1].trim();
+                                const stpValue = parseFloat(stpMatch[1]);
+                                currentStpValues[typeName] = stpValue;
+                            }
+                        });
+                        for (const type in currentStpValues) {
+                            const lastVal = charStats.lastStpValues[type] || 0;
+                            const currentVal = currentStpValues[type];
+                            const gain = currentVal - lastVal;
+                            if (gain > 0) {
+                                if (!charStats.totalStpGained[type]) charStats.totalStpGained[type] = 0;
+                                charStats.totalStpGained[type] += gain;
+                            }
+                            charStats.lastStpValues[type] = currentVal;
+                        }
+                    }
+                }
+
+                if (!currentActor || !stats[currentActor]) return;
+
+                if (match = text.match(/(.+) に ([\d,]+) のダメージ！！/)) {
+                    const target = match[1].trim();
+                    const damage = parseInt(match[2].replace(/,/g, ''), 10);
+                    if (stats[target]) {
+                        stats[target].damageTaken += damage;
+                        tempTurnStats[target].damageTaken += damage;
+                    }
+                    stats[currentActor].damageDealt += damage;
+                    tempTurnStats[currentActor].damageDealt += damage;
+                }
+                if (match = text.match(/(.+) のHPが ([\d,]+) 回復！！/)) {
+                    const target = match[1].trim();
+                    const healing = parseInt(match[2].replace(/,/g, ''), 10);
+                    if (stats[currentActor]) {
+                        stats[currentActor].healingDone += healing;
+                        tempTurnStats[currentActor].healingDone += healing;
+                    }
+                }
+                if (match = text.match(/(.+) に (.+) を (\d+) 付与！！/)) {
+                    const target = match[1].trim();
+                    const stateName = match[2].trim().replace(/ /g, '');
+                    const depth = parseInt(match[3], 10);
+                    if (statusDetails[stateName] && stats[target]) {
+                        if (statusDetails[stateName].type === 'buff') {
+                            stats[currentActor].buffsApplied += depth;
+                            stats[target].buffsReceived += depth;
+                            if(!stats[currentActor].buffsAppliedDetail[stateName]) stats[currentActor].buffsAppliedDetail[stateName] = 0;
+                            stats[currentActor].buffsAppliedDetail[stateName] += depth;
+                            if(!stats[target].buffsReceivedDetail[stateName]) stats[target].buffsReceivedDetail[stateName] = 0;
+                            stats[target].buffsReceivedDetail[stateName] += depth;
+                        }
+                        if (statusDetails[stateName].type === 'debuff'){
+                            stats[currentActor].debuffsApplied += depth;
+                            stats[target].debuffsReceived += depth;
+                            if(!stats[currentActor].debuffsAppliedDetail[stateName]) stats[currentActor].debuffsAppliedDetail[stateName] = 0;
+                            stats[currentActor].debuffsAppliedDetail[stateName] += depth;
+                            if(!stats[target].debuffsReceivedDetail[stateName]) stats[target].debuffsReceivedDetail[stateName] = 0;
+                            stats[target].debuffsReceivedDetail[stateName] += depth;
+                        }
+                    }
+                }
+                if (text.includes('ステップスキル発動！') && stats[currentActor]) {
+                    stats[currentActor].lastStpValues = {};
+                }
+            }
+        });
+
+        recordTurnData(currentTurn);
+        return { stats, characters: initialChars, turnData };
+    }
+
+    function renderStatsPanel({ stats, characters, turnData }) {
+        const sheet = document.querySelector('.sheet');
+        if(!sheet) return;
+
+        const container = document.createElement('div');
+        container.id = 'stats-container';
+        container.innerHTML = `
+            <div class="stats-tabs">
+                <button class="stats-tab-button active" data-tab="summary">サマリー表</button>
+                <button class="stats-tab-button" data-tab="graph">時系列グラフ</button>
+            </div>
+            <div id="stats-summary" class="stats-tab-content active"></div>
+            <div id="stats-graph" class="stats-tab-content">
+                <div class="graph-controls">
+                    <label for="graph-data-select">表示データ: </label>
+                    <select id="graph-data-select">
+                        <option value="hp" selected>キャラクター別 HP</option>
+                        <option value="turnDamageDealt">キャラクター別 与ダメージ (累計)</option>
+                        <option value="turnDamageTaken">キャラクター別 被ダメージ (累計)</option>
+                        <option value="turnHealingDone">キャラクター別 与回復量 (累計)</option>
+                    </select>
+                </div>
+                <div style="position: relative; height:400px;">
+                    <canvas id="hp-chart"></canvas>
+                </div>
+            </div>
+        `;
+        sheet.appendChild(container);
+
+        const summaryDiv = document.getElementById('stats-summary');
+        const tableHeader = `<thead><tr><th>キャラクター</th><th>与ダメ</th><th>被ダメ</th><th>与回復</th><th>STP蓄積</th><th>強化与</th><th>強化受</th><th>異常与</th><th>異常受</th></tr></thead>`;
+        const generateTableRows = (charList) => {
+            let rowsHTML = '';
+            charList.forEach(char => {
+                const s = stats[char.cname];
+                if (!s) return;
+                const stpText = Object.entries(s.totalStpGained).map(([key, val]) => `${key}: ${Math.round(val)}%`).join('\n') || '-';
+                const buffsGivenTooltip = Object.entries(s.buffsAppliedDetail).map(([k,v])=>`<li>${k}: ${v}</li>`).join('');
+                const buffsRecvTooltip = Object.entries(s.buffsReceivedDetail).map(([k,v])=>`<li>${k}: ${v}</li>`).join('');
+                const debuffsGivenTooltip = Object.entries(s.debuffsAppliedDetail).map(([k,v])=>`<li>${k}: ${v}</li>`).join('');
+                const debuffsRecvTooltip = Object.entries(s.debuffsReceivedDetail).map(([k,v])=>`<li>${k}: ${v}</li>`).join('');
+
+                rowsHTML += `<tr>
+                    <td class="char-name-col">${char.cname}</td>
+                    <td>${s.damageDealt.toLocaleString()}</td>
+                    <td>${s.damageTaken.toLocaleString()}</td>
+                    <td>${s.healingDone.toLocaleString()}</td>
+                    <td class="stp-cell">${stpText}</td>
+                    <td class="tooltip-cell" data-tooltip-title="強化付与内訳" data-tooltip-content="${buffsGivenTooltip}">${s.buffsApplied}</td>
+                    <td class="tooltip-cell" data-tooltip-title="強化被付与内訳" data-tooltip-content="${buffsRecvTooltip}">${s.buffsReceived}</td>
+                    <td class="tooltip-cell" data-tooltip-title="異常付与内訳" data-tooltip-content="${debuffsGivenTooltip}">${s.debuffsApplied}</td>
+                    <td class="tooltip-cell" data-tooltip-title="異常被付与内訳" data-tooltip-content="${debuffsRecvTooltip}">${s.debuffsReceived}</td>
+                </tr>`;
+            });
+            return `<tbody>${rowsHTML}</tbody>`;
+        };
+        const team0Chars = characters.filter(c => c.team === '0');
+        const team1Chars = characters.filter(c => c.team === '1');
+        summaryDiv.innerHTML = `
+            <h3 class="stats-team-header">味方チーム</h3><table class="stats-table">${tableHeader}${generateTableRows(team0Chars)}</table>
+            <h3 class="stats-team-header">敵チーム</h3><table class="stats-table">${tableHeader}${generateTableRows(team1Chars)}</table>
+        `;
+
+        let chartRendered = false;
+        container.querySelectorAll('.stats-tab-button').forEach(button => {
+            button.addEventListener('click', () => {
+                if(button.classList.contains('active')) return;
+                container.querySelector('.stats-tab-button.active').classList.remove('active');
+                container.querySelector('.stats-tab-content.active').classList.remove('active');
+                button.classList.add('active');
+                const tabName = button.dataset.tab;
+                document.getElementById(`stats-${tabName}`).classList.add('active');
+                if (tabName === 'graph' && !chartRendered) {
+                    renderGraph(turnData, characters);
+                    chartRendered = true;
+                }
+            });
+        });
+
+        document.getElementById('graph-data-select').addEventListener('change', (e) => {
+            if (chartRendered) {
+                renderGraph(turnData, characters, e.target.value);
+            }
+        });
+
+        const tooltip = document.getElementById('sg-userscript-tooltip');
+        summaryDiv.querySelectorAll('.tooltip-cell').forEach(cell => {
+            cell.addEventListener('mouseenter', e => {
+                const content = e.target.dataset.tooltipContent;
+                if (!content) return;
+                const title = e.target.dataset.tooltipTitle;
+                tooltip.innerHTML = `<strong>${title}</strong><hr style="margin: 2px 0; border-color: #555;"><ul>${content}</ul>`;
+                tooltip.style.display = 'block';
+            });
+            cell.addEventListener('mousemove', e => {
+                 tooltip.style.left = `${e.clientX + 15}px`;
+                 tooltip.style.top = `${e.clientY + 15}px`;
+            });
+            cell.addEventListener('mouseleave', () => {
+                tooltip.style.display = 'none';
+            });
+        });
+    }
+
+    function renderGraph(turnData, characters, dataType = 'hp') {
+        if (chartInstance) chartInstance.destroy();
+        const ctx = document.getElementById('hp-chart');
+        if (!ctx) return;
+
+        const teamColors = {
+            '0': ['rgba(54, 162, 235, 1)', 'rgba(137, 207, 240, 1)', 'rgba(0, 119, 182, 1)', 'rgba(30, 144, 255, 1)'],
+            '1': ['rgba(255, 99, 132, 1)', 'rgba(255, 182, 193, 1)', 'rgba(210, 4, 45, 1)', 'rgba(255, 20, 147, 1)']
+        };
+        const datasets = characters.map((char, i) => {
+            const team = char.team;
+            const color = teamColors[team][i % teamColors[team].length];
+            let dataToShow = turnData.datasets[char.cname][dataType];
+
+            if (dataType !== 'hp') {
+                 dataToShow = dataToShow.reduce((acc, val, i) => {
+                     acc.push((acc[i - 1] || 0) + val);
+                     return acc;
+                 }, []);
+            }
+
+            return {
+                label: char.cname, data: dataToShow, borderColor: color,
+                backgroundColor: color.replace('1)', '0.1)'),
+                tension: 0.1, borderWidth: 2, fill: false
+            };
+        });
+
+        const yAxisLabel = {
+            'hp': 'HP', 'turnDamageDealt': '累計与ダメージ',
+            'turnDamageTaken': '累計被ダメージ', 'turnHealingDone': '累計与回復量'
+        }[dataType];
+
+        chartInstance = new Chart(ctx.getContext('2d'), {
+            type: 'line', data: { labels: turnData.labels, datasets: datasets },
+            options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: dataType !== 'hp', title: { display: true, text: yAxisLabel } } } }
+        });
+    }
+
+    window.addEventListener('load', () => {
+        if (document.getElementById(SCRIPT_ID)) return;
+        const originalContainer = document.getElementById('container');
+        if (!originalContainer) return;
+
+        scrollDataElements = Array.from(document.querySelectorAll('.scrolldata'));
+        if (scrollDataElements.length === 0) return;
+        scrollDataElements.forEach((el, i) => el.id = `scrolldata-${i}`);
+
+        const initialCharacters = parseCharacterData(scrollDataElements[0]);
+        allCharIndices = initialCharacters.map(c => c.index);
+        lastKnownState = { id: null, initialData: initialCharacters };
+
+        scrollDataElements.forEach(el => {
+            const nextSeq = el.nextElementSibling;
+            if(nextSeq && nextSeq.textContent.includes('戦闘を離脱した！！')) {
+                const match = nextSeq.textContent.match(/(.+?) は戦闘を離脱した！！/);
+                if (match) {
+                    const defeatedName = match[1].trim();
+                    const charData = parseCharacterData(el);
+                    const defeatedChar = charData.find(c => c.cname === defeatedName);
+                    if (defeatedChar) {
+                         finalHpValues[defeatedChar.index] = defeatedChar.hp;
+                    }
+                }
+            }
+        });
+
+        const wrapper = document.createElement('div');
+        wrapper.id = 'sg-log-wrapper';
+        originalContainer.parentNode.insertBefore(wrapper, originalContainer);
+        const leftPanel = document.createElement('div');
+        leftPanel.id = 'left-status-panel'; leftPanel.className = 'status-panel';
+        const rightPanel = document.createElement('div');
+        rightPanel.id = 'right-status-panel'; rightPanel.className = 'status-panel';
+        wrapper.appendChild(leftPanel); wrapper.appendChild(originalContainer); wrapper.appendChild(rightPanel);
+
+        const leftCardContainer = document.createElement('div');
+        leftCardContainer.className = 'char-card-container'; leftPanel.appendChild(leftCardContainer);
+        const rightCardContainer = document.createElement('div');
+        rightCardContainer.className = 'char-card-container'; rightPanel.appendChild(rightCardContainer);
+
+        const tooltip = document.createElement('div');
+        tooltip.id = 'sg-userscript-tooltip'; document.body.appendChild(tooltip);
+
+        [leftPanel, rightPanel].forEach(panel => {
+            panel.addEventListener('mouseover', e => {
+                if (e.target.classList.contains('state-badge')) {
+                    const statusName = e.target.dataset.statusName;
+                    const statusText = e.target.textContent;
+                    const details = statusDetails[statusName];
+                    if (details) {
+                        let tooltipContent = '';
+                        const depthMatch = statusText.match(/x(\d+)/);
+                        const depth = depthMatch ? parseInt(depthMatch[1], 10) : 1;
+
+                        if (statusName === '幸運') {
+                            let critPowerBonus = depth * 0.7;
+                            let capped = false;
+                            if (critPowerBonus > 35) {
+                                critPowerBonus = 35;
+                                capped = true;
+                            }
+                            tooltipContent = `<strong>${statusName}</strong><hr style="margin: 4px 0; border-color: #555;">${details.desc}<br><strong>会心威力:</strong> +${critPowerBonus.toFixed(1)}% ${capped ? '(上限)' : ''}`;
+                        } else if (details.base !== undefined && details.scale !== undefined) {
+                            const currentValue = details.base + ((depth-1) * details.scale);
+                            tooltipContent = `<strong>${statusName} (現在効果量: ${currentValue}${details.unit})</strong><hr style="margin: 4px 0; border-color: #555;">${details.desc}`;
+                        } else {
+                            tooltipContent = `<strong>${statusName}</strong><hr style="margin: 4px 0; border-color: #555;">${details.desc}`;
+                        }
+
+                        tooltip.innerHTML = tooltipContent;
+                        tooltip.style.display = 'block';
+                    }
+                }
+            });
+            document.addEventListener('mousemove', e => {
+                 if (tooltip.style.display === 'block') {
+                    tooltip.style.left = `${e.clientX + 15}px`;
+                    tooltip.style.top = `${e.clientY + 15}px`;
+                }
+            });
+            panel.addEventListener('mouseout', e => {
+                if (e.target.classList.contains('state-badge')) {
+                    tooltip.style.display = 'none';
+                }
+            });
+        });
+
+        initialCharacters.forEach(charData => {
+            const card = document.createElement('div');
+            card.id = `char-card-${charData.index}`; card.className = 'char-card';
+            card.innerHTML = `
+                <div class="char-header"><img src="${charData.icon}" alt="${charData.cname}"><span class="char-name">${charData.cname}</span></div>
+                <div class="status-text"><span class="hp-text"></span></div>
+                <div class="status-bar-container"><div class="status-bar hp-bar"></div></div>
+                <div class="status-text"><span class="sp-text"></span><span class="mp-text"></span></div>
+                <div style="display: flex; gap: 4px;">
+                    <div class="status-bar-container"><div class="status-bar sp-bar"></div></div>
+                    <div class="status-bar-container"><div class="status-bar mp-bar"></div></div>
+                </div>
+                <div class="char-states"></div>
+            `;
+            if (charData.team === '0') { leftCardContainer.appendChild(card); }
+            else { rightCardContainer.appendChild(card); }
+        });
+
+        window.addEventListener('scroll', () => {
+            if (throttleTimer) return;
+            throttleTimer = setTimeout(() => { updateDynamicPanels(); throttleTimer = null; }, THROTTLE_DELAY);
+        });
+        updateDynamicPanels();
+
+        const battleAnalysisData = parseFullLog();
+        renderStatsPanel(battleAnalysisData);
+
+        const marker = document.createElement('div');
+        marker.id = SCRIPT_ID; document.body.appendChild(marker);
+    });
+})();
