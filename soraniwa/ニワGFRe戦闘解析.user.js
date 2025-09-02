@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ニワGFRe戦闘解析
 // @namespace    http://tampermonkey.net/
-// @version      1.1
+// @version      1.2
 // @description  Stroll Greenの戦闘ログに動的なステータスパネルを追加し、キャラクター個別の戦闘統計・グラフ・詳細な行動分析機能を提供します。
 // @author       ayautaginrei(gemini)
 // @match        https://soraniwa.428.st/gf/result/*
@@ -117,17 +117,20 @@
         .stats-table .accordion-toggle { display: inline-block; width: 1em; text-align: center; }
         .stats-team-header { font-size: 1.2em; font-weight: bold; margin-top: 15px; margin-bottom: 5px; border-bottom: 2px solid var(--panel-border-color); }
         .stats-team-header:first-child { margin-top: 0; }
-        .graph-controls { margin-bottom: 10px; text-align: center; }
+        .graph-controls { margin-bottom: 10px; text-align: center; display: flex; gap: 15px; justify-content: center; align-items: center; flex-wrap: wrap;}
 
-        /* Accordion Styles */
+        /* --- Accordion Styles (今回の修正箇所) --- */
         .accordion-detail-row { display: none; }
         .accordion-detail-cell { padding: 15px !important; background-color: var(--accordion-detail-bg); }
-        .accordion-body { display: flex; gap: 20px; }
-        .accordion-summary { flex: 0 0 280px; font-size: 14px; }
+        .accordion-body { display: flex; flex-direction: column; gap: 15px; }
+        .accordion-summary-wrapper { display: flex; gap: 20px; flex-wrap: wrap; }
+        .accordion-summary { flex: 1; min-width: 280px; font-size: 14px; }
         .accordion-summary h3 { margin-top: 0; border-bottom: 1px solid #ccc; padding-bottom: 5px; font-size: 1.1em; }
         .accordion-summary div { display: flex; justify-content: space-between; margin-bottom: 6px; }
         .accordion-summary div span:first-child { font-weight: bold; color: #333; }
         .accordion-summary span[data-tooltip-text] { cursor: help; text-decoration: underline dotted; }
+        .accordion-summary .sub-item { padding-left: 15px; }
+        .accordion-summary .sub-item span:first-child { font-weight: normal; }
         .accordion-details { flex-grow: 1; min-width: 0; }
         .accordion-details .stats-table { font-size: 12px; }
         .accordion-details .stats-table td, .accordion-details .stats-table th { padding: 5px; }
@@ -229,35 +232,37 @@
         if (initialChars.length === 0) return null;
 
         const battleActions = [];
+        const allStatuses = new Set();
         let currentTurn = 1, currentActor = '', actionCounter = 0, currentAction = null;
         let beforeActionStates = initialChars.reduce((acc, c) => ({...acc, [c.cname]: c }), {});
-        let nextActionIsStepSkill = false;
 
+        // --- スキル名取得ロジックを改善 ---
+        // スキル名は複雑なHTMLを持つことがあるため、主要な名前のみを抽出します
         const getSkillName = (startNode) => {
-            let skillName = '通常行動';
-            let potentialDisplayName = null;
             let currentNode = startNode;
-            let lookahead = 0;
-
-            while (currentNode && !currentNode.querySelector('.markerA, .markerB') && !currentNode.textContent.includes('コネクトスキルが発動') && lookahead < 4) {
-
+            for (let i = 0; i < 4 && currentNode; i++) {
+                // '>>' を含むカスタマイズスキルが真のスキル名
                 const smallNode = currentNode.querySelector('small');
                 if (smallNode && smallNode.textContent.includes('>>')) {
                     return smallNode.textContent.replace(/.*>>/, '').trim().replace(/！/g, '');
                 }
 
-                if (!potentialDisplayName) {
-                    const skillNode = currentNode.querySelector('.tskill');
-                    if (skillNode) {
-                        potentialDisplayName = skillNode.textContent.replace(/>>.*/, '').trim().replace(/！/g, '');
+                // それ以外の場合は、主要なスキル名を探す
+                const skillNode = currentNode.querySelector('.tskill');
+                if (skillNode) {
+                    let mainText = '';
+                    // <img>や<small>のような子ノードを無視し、直接のテキストのみを抽出
+                    for (const child of skillNode.childNodes) {
+                        if (child.nodeType === 3) { // Node.TEXT_NODE
+                            mainText = child.textContent.trim();
+                            break;
+                        }
                     }
+                    if (mainText) return mainText.replace(/！/g, '');
                 }
-
                 currentNode = currentNode.nextElementSibling;
-                lookahead++;
             }
-
-            return potentialDisplayName || skillName;
+            return '通常行動';
         };
 
         const pushCurrentAction = () => {
@@ -286,10 +291,6 @@
                 const html = node.innerHTML;
                 let match;
 
-                if (text.includes('ステップスキル発動！')) {
-                    nextActionIsStepSkill = true;
-                }
-
                 if (match = text.match(/-Turn (\d+)-/)) {
                     pushCurrentAction(); currentAction = null;
                     currentTurn = parseInt(match[1], 10);
@@ -305,18 +306,16 @@
                     const isPreceding = actorNode.textContent.includes('の先行行動！');
                     currentActor = actorNode.textContent.replace(/[▼▼]/g, '').replace(/の行動！|の先行行動！/g, '').trim();
                     const skillName = getSkillName(node.nextElementSibling);
-                    const isStep = nextActionIsStepSkill && skillName !== '通常行動';
 
                     currentAction = {
                         id: `action-${actionCounter++}`, turn: currentTurn, actor: currentActor, skill: skillName,
                         events: [], spCost: 0, mpCost: 0,
                         isPreceding: isPreceding,
-                        isStepSkill: isStep,
+                        isStepSkill: false, // デフォルトはfalseに設定
                         isConnectSkill: false,
                         beforeState: beforeActionStates[currentActor],
                         afterState: null
                     };
-                    nextActionIsStepSkill = false;
                 } else if (connectMatch) {
                     pushCurrentAction();
                     currentActor = connectMatch[1].trim();
@@ -335,6 +334,14 @@
 
 
                 if (currentAction) {
+                    // --- ステップスキル判定ロジックを修正 ---
+                    // このログにステップスキル発動マーカーが含まれていれば、*現在*のアクションにフラグを立てる
+                    if (text.includes('ステップスキル発動！')) {
+                        currentAction.isStepSkill = true;
+                        // マーカーの直後に本当のスキル名が表示されるため、スキル名を再取得して更新する
+                        currentAction.skill = getSkillName(node.nextElementSibling);
+                    }
+
                     const damageRegex = /(.+?) に <b.*?class=['"](.*?)['"].*?>([\d,]+)<\/b>.*?ダメージ！！/g;
                     const healRegex = /(.+?) のHPが <b([^>]*)>(.+?)<\/b> 回復！！/g;
                     const evadeRegex = /(.+?) は攻撃を回避した！！/g;
@@ -353,6 +360,7 @@
                      for (const m of html.matchAll(buffRegex)) {
                         const stateName = m[2].trim().replace(/ /g, '');
                         if (statusDetails[stateName]) {
+                            allStatuses.add(stateName);
                             currentAction.events.push({ type: statusDetails[stateName].type, status: stateName, target: m[1].trim(), value: parseInt(m[4], 10), is_critical: m[3].includes('cri') });
                         }
                     }
@@ -379,9 +387,33 @@
                 buffsApplied: 0, debuffsApplied: 0, buffsReceived: 0, debuffsReceived: 0,
                 buffsAppliedDetails: {}, debuffsAppliedDetails: {},
                 buffsReceivedDetails: {}, debuffsReceivedDetails: {},
-                skills: {}, actions: [], damageTakenLog: []
+                skills: {}, actions: [], damageTakenLog: [],
+                // --- NEW STATS ---
+                totalDamageToEnemies: 0, totalDamageToAllies: 0, totalDamageToSelf: 0,
+                totalHealingToAllies: 0, totalHealingToSelf: 0, totalOverheal: 0,
+                maxSingleHitDealt: 0, maxSingleHitTaken: 0,
+                attacksEvadedByOpponents: 0,
+                totalHealingTakenFromSkills: 0, totalHealingTakenFromNaturalRegen: 0
             };
         });
+
+        // 自然回復の集計
+        document.querySelectorAll('.sequence').forEach(node => {
+            const text = node.textContent.trim();
+            if (text.includes('のHP・SP・MPが 4% 回復！')) {
+                const charNameMatch = text.match(/(.+) のHP・SP・MPが/);
+                if (charNameMatch) {
+                    const charName = charNameMatch[1].trim();
+                    const charState = beforeActionStates[charName];
+                    if (charState && finalStats[charName]) {
+                        const naturalHealAmount = Math.floor(charState.mhp * 0.04);
+                        finalStats[charName].totalHealingTakenFromNaturalRegen += naturalHealAmount;
+                        beforeActionStates[charName].hp = Math.min(charState.mhp, charState.hp + naturalHealAmount);
+                    }
+                }
+            }
+        });
+
 
         battleActions.forEach(action => {
             if (!action || !action.actor) return;
@@ -420,22 +452,50 @@
                     skillStat.totalDamage += event.value;
                     actorStats.attacksMade++;
                     skillStat.attackCount++;
-                    if (isCrit) {
-                        actorStats.criticalHits++;
-                    }
-                    if (finalStats[event.target]) {
-                        finalStats[event.target].totalDamageTaken += event.value;
-                        finalStats[event.target].attacksReceived++;
-                        finalStats[event.target].damageTakenLog.push({ turn: action.turn, actor: action.actor, skill: action.skill, result: `${event.value.toLocaleString()} ダメージ`});
+                    if (isCrit) actorStats.criticalHits++;
+
+                    actorStats.maxSingleHitDealt = Math.max(actorStats.maxSingleHitDealt, event.value);
+
+                    const targetStats = finalStats[event.target];
+                    if (targetStats) {
+                        targetStats.totalDamageTaken += event.value;
+                        targetStats.attacksReceived++;
+                        targetStats.maxSingleHitTaken = Math.max(targetStats.maxSingleHitTaken, event.value);
+                        targetStats.damageTakenLog.push({ turn: action.turn, actor: action.actor, skill: action.skill, result: `${event.value.toLocaleString()} ダメージ`});
+
+                        if (actorStats.team === targetStats.team) {
+                            actorStats.totalDamageToAllies += event.value;
+                            if (action.actor === event.target) {
+                                actorStats.totalDamageToSelf += event.value;
+                            }
+                        } else {
+                            actorStats.totalDamageToEnemies += event.value;
+                        }
                     }
                 } else if (event.type === 'heal') {
                     actorStats.totalHealingDone += event.value;
                     skillStat.totalHealing += event.value;
+
+                    const targetState = beforeActionStates[event.target];
+                    if (targetState) {
+                        const overheal = Math.max(0, (targetState.hp + event.value) - targetState.mhp);
+                        actorStats.totalOverheal += overheal;
+                        finalStats[event.target].totalHealingTakenFromSkills += event.value;
+                    }
+
+                    if (action.actor === event.target) {
+                        actorStats.totalHealingToSelf += event.value;
+                    } else {
+                        actorStats.totalHealingToAllies += event.value;
+                    }
                 } else if (event.type === 'evade') {
+                    const attackerStats = finalStats[action.actor];
+                    if(attackerStats) attackerStats.attacksEvadedByOpponents++;
+
                     if (finalStats[event.target]) {
                         finalStats[event.target].evasions++;
                         finalStats[event.target].attacksReceived++;
-                         finalStats[event.target].damageTakenLog.push({ turn: action.turn, actor: action.actor, skill: action.skill, result: '回避' });
+                        finalStats[event.target].damageTakenLog.push({ turn: action.turn, actor: action.actor, skill: action.skill, result: '回避' });
                     }
                 } else if(event.type === 'buff') {
                     actorStats.buffsApplied += event.value;
@@ -455,7 +515,7 @@
             });
         });
 
-        return { stats: finalStats, characters: initialChars, battleActions };
+        return { stats: finalStats, characters: initialChars, battleActions, allStatuses: Array.from(allStatuses).sort() };
     }
 
     /**
@@ -464,7 +524,10 @@
     function generateTurnData(battleActions, initialChars) {
         const turnData = { labels: [], datasets: {} };
         initialChars.forEach(c => {
-            turnData.datasets[c.cname] = { team: c.team, hp: [], turnDamageDealt: [], turnDamageTaken: [], turnHealingDone: [] };
+            turnData.datasets[c.cname] = {
+                team: c.team, hp: [], sp: [], mp: [], states: [],
+                turnDamageDealt: [], turnDamageTaken: [], turnHealingDone: []
+            };
         });
 
         const turnMap = new Map();
@@ -502,6 +565,19 @@
             initialChars.forEach(c => {
                 const charState = charMap.get(c.cname);
                 turnData.datasets[c.cname].hp.push(charState ? charState.hp : 0);
+                turnData.datasets[c.cname].sp.push(charState ? charState.sp : 0);
+                turnData.datasets[c.cname].mp.push(charState ? charState.mp : 0);
+
+                const turnStates = {};
+                if (charState) {
+                    charState.states.forEach(s => {
+                        const match = s.match(/(.+?)x(\d+)/);
+                        if (match) turnStates[match[1]] = parseInt(match[2], 10);
+                        else turnStates[s] = 1; // 深度がない場合
+                    });
+                }
+                turnData.datasets[c.cname].states.push(turnStates);
+
 
                 const actionsThisTurn = battleActions.filter(a => a.turn === i);
                 let turnDamageDealt = 0, turnDamageTaken = 0, turnHealingDone = 0;
@@ -529,7 +605,7 @@
      * メインの統計パネルとグラフを描画する
      */
     function renderStatsPanelAndGraph(analysisResult) {
-        const { stats, characters, turnData } = analysisResult;
+        const { stats, characters, turnData, allStatuses } = analysisResult;
         const sheet = document.querySelector('.sheet');
         if (!sheet) return;
 
@@ -543,13 +619,24 @@
             <div id="stats-summary" class="stats-tab-content active"></div>
             <div id="stats-graph" class="stats-tab-content">
                  <div class="graph-controls">
-                    <label for="graph-data-select">表示データ: </label>
-                    <select id="graph-data-select">
-                        <option value="hp" selected>キャラクター別 HP推移（ターン毎）</option>
-                        <option value="turnDamageDealt">キャラクター別 与ダメージ (累積)</option>
-                        <option value="turnDamageTaken">キャラクター別 被ダメージ (累積)</option>
-                        <option value="turnHealingDone">キャラクター別 与回復量 (累積)</option>
-                    </select>
+                    <div>
+                        <label for="graph-data-select">表示データ: </label>
+                        <select id="graph-data-select">
+                            <option value="hp" selected>HP推移</option>
+                            <option value="sp">SP推移</option>
+                            <option value="mp">MP推移</option>
+                            <option value="turnDamageDealt">与ダメージ (累積)</option>
+                            <option value="turnDamageTaken">被ダメージ (累積)</option>
+                            <option value="turnHealingDone">与回復量 (累積)</option>
+                            <option value="buffDebuff">バフ・デバフ深度</option>
+                        </select>
+                    </div>
+                    <div id="buff-debuff-controls" style="display: none;">
+                         <label for="char-select-for-graph">キャラクター: </label>
+                         <select id="char-select-for-graph"></select>
+                         <label for="status-select-for-graph">状態: </label>
+                         <select id="status-select-for-graph"></select>
+                    </div>
                 </div>
                 <div style="position: relative; height:400px;">
                     <canvas id="hp-chart"></canvas>
@@ -624,37 +711,54 @@
                 container.querySelector(`#stats-${tabName}`).classList.add('active');
 
                 if (tabName === 'graph' && !chartRendered) {
-                    renderGraph(turnData, characters);
+                    renderGraph(analysisResult);
                     chartRendered = true;
                 }
             });
         });
 
-        // 3. グラフのデータ種別切り替え
-        document.getElementById('graph-data-select').addEventListener('change', (e) => {
-            renderGraph(turnData, characters, e.target.value);
-        });
-
-        // 4. アコーディオン内部のタブ切り替え
+        // 3. アコーディオン内部のタブ切り替え（generateDetailContentで生成される要素に対するイベントリスナー）
         summaryDiv.addEventListener('click', e => {
              if (e.target.matches('.accordion-details .stats-tab-button')) {
                 const button = e.target;
                 const detailsNode = button.closest('.accordion-details');
-                if (button.classList.contains('active')) return;
+                if (!detailsNode || button.classList.contains('active')) return;
 
-                detailsNode.querySelector('.stats-tab-button.active').classList.remove('active');
-                detailsNode.querySelector('.stats-tab-content.active').classList.remove('active');
+                const activeTab = detailsNode.querySelector('.stats-tab-button.active');
+                if(activeTab) activeTab.classList.remove('active');
+
+                const activeContent = detailsNode.querySelector('.stats-tab-content.active');
+                if(activeContent) activeContent.classList.remove('active');
+
                 button.classList.add('active');
-                detailsNode.querySelector(`[data-content="${button.dataset.tab}"]`).classList.add('active');
+                const content = detailsNode.querySelector(`[data-content="${button.dataset.tab}"]`);
+                if(content) content.classList.add('active');
              }
         });
+
+        // --- グラフ用コントロールの初期化とイベントリスナー ---
+        const charSelect = document.getElementById('char-select-for-graph');
+        const statusSelect = document.getElementById('status-select-for-graph');
+        characters.forEach(c => charSelect.add(new Option(c.cname, c.cname)));
+        allStatuses.forEach(s => statusSelect.add(new Option(s, s)));
+
+        const mainGraphSelect = document.getElementById('graph-data-select');
+
+        mainGraphSelect.addEventListener('change', () => {
+             document.getElementById('buff-debuff-controls').style.display = mainGraphSelect.value === 'buffDebuff' ? 'flex' : 'none';
+             renderGraph(analysisResult)
+        });
+        charSelect.addEventListener('change', () => renderGraph(analysisResult));
+        statusSelect.addEventListener('change', () => renderGraph(analysisResult));
     }
 
+    // --- 詳細表示を生成する関数 (generateDetailContent) ---
     function generateDetailContent(charName, analysisResult) {
         const { stats } = analysisResult;
         const charStats = stats[charName];
         if (!charStats) return '';
 
+        // ★★★ この関数内で、表示に必要なHTML文字列を事前に生成します ★★★
         let skillsHtml = `<table class="stats-table"><thead><tr><th>スキル名</th><th>回数</th><th>総ダメ/回復</th><th>平均</th><th>会心率</th><th>消費SP</th><th>消費MP</th></tr></thead><tbody>`;
         for (const skillName in charStats.skills) {
             const skill = charStats.skills[skillName];
@@ -666,7 +770,7 @@
         }
         skillsHtml += `</tbody></table>`;
 
-        let actionsHtml = `<table class="stats-table"><thead><tr><th>T</th><th>スキル</th><th>消費SP/MP</th><th>効果詳細</th></tr></thead><tbody>`;
+        let actionsHtml = `<table class="stats-table"><thead><tr><th>T</th><th>スキル</th><th>消費SP/MP</th><th>実行時状態</th><th>効果詳細</th></tr></thead><tbody>`;
         charStats.actions.forEach(action => {
             const effects = action.events.map(e => {
                 let text = e.target ? `${e.target}: ` : '';
@@ -688,7 +792,10 @@
                 rowClass = 'step-skill-row';
             }
 
-            actionsHtml += `<tr class="${rowClass}"><td>${action.turn}</td><td style="text-align:left">${prefix}${action.skill}</td><td>${action.spCost}/${action.mpCost}</td><td style="text-align:left;">${effects || '-'}</td></tr>`;
+            // 行動実行前の状態（バフ・デバフ）を取得して表示
+            const statesHtml = action.beforeState && action.beforeState.states.length > 0 ? action.beforeState.states.join('<br>') : '-';
+
+            actionsHtml += `<tr class="${rowClass}"><td>${action.turn}</td><td style="text-align:left">${prefix}${action.skill}</td><td>${action.spCost}/${action.mpCost}</td><td style="text-align:left; font-size: 11px;">${statesHtml}</td><td style="text-align:left;">${effects || '-'}</td></tr>`;
         });
         actionsHtml += `</tbody></table>`;
 
@@ -698,22 +805,42 @@
         });
         takenHtml += `</tbody></table>`;
 
+        const hitCount = charStats.attacksMade - charStats.attacksEvadedByOpponents;
+        const hitRate = charStats.attacksMade > 0 ? (hitCount / charStats.attacksMade * 100).toFixed(1) : '0.0';
+        const evasionRate = charStats.attacksReceived > 0 ? (charStats.evasions / charStats.attacksReceived * 100).toFixed(1) : '0.0';
+        const totalHealingTaken = charStats.totalHealingTakenFromSkills + charStats.totalHealingTakenFromNaturalRegen;
+
         const attackCritRate = charStats.attacksMade > 0 ? (charStats.criticalHits / charStats.attacksMade * 100).toFixed(1) : '0.0';
         const overallCritRate = charStats.critableActions > 0 ? (charStats.totalCrits / charStats.critableActions * 100).toFixed(1) : '0.0';
-        const evasionRate = charStats.attacksReceived > 0 ? (charStats.evasions / charStats.attacksReceived * 100).toFixed(1) : '0.0';
 
+        // --- ★★★ ここからが今回の修正箇所 ★★★ ---
         return `
             <div class="accordion-body">
-                <div class="accordion-summary">
-                    <h3>パフォーマンスサマリー</h3>
-                    <div><span>総消費SP:</span> <span>${charStats.totalSpConsumed.toLocaleString()}</span></div>
-                    <div><span>総消費MP:</span> <span>${charStats.totalMpConsumed.toLocaleString()}</span></div>
-                    <h3 style="margin-top: 20px;">攻撃性能</h3>
-                    <div><span>攻撃会心率:</span> <span data-tooltip-text="${charStats.criticalHits} / ${charStats.attacksMade}">${attackCritRate}%</span></div>
-                    <div><span>総合会心率:</span> <span data-tooltip-text="${charStats.totalCrits} / ${charStats.critableActions}">${overallCritRate}%</span></div>
-                    <div><span>平均与ダメージ:</span> <span>${charStats.attacksMade > 0 ? (charStats.totalDamageDealt / charStats.attacksMade).toFixed(0) : '0'}</span></div>
-                    <h3 style="margin-top: 20px;">防御性能</h3>
-                     <div><span>回避率:</span> <span data-tooltip-text="${charStats.evasions} / ${charStats.attacksReceived}">${evasionRate}%</span></div>
+                <div class="accordion-summary-wrapper">
+                    <div class="accordion-summary">
+                        <h3>戦闘貢献</h3>
+                        <div><span>与ダメージ:</span> <span>${charStats.totalDamageDealt.toLocaleString()}</span></div>
+                        <div class="sub-item"><span> └ 敵へ:</span> <span>${charStats.totalDamageToEnemies.toLocaleString()}</span></div>
+                        <div class="sub-item"><span> └ 味方へ:</span> <span>${charStats.totalDamageToAllies.toLocaleString()}</span></div>
+                        <div class="sub-item"><span> └ 自身へ:</span> <span>${charStats.totalDamageToSelf.toLocaleString()}</span></div>
+                        <div><span>一撃最大:</span> <span>${charStats.maxSingleHitDealt.toLocaleString()}</span></div>
+                        <div style="margin-top: 10px;"><span>与HP回復:</span> <span>${charStats.totalHealingDone.toLocaleString()}</span></div>
+                        <div class="sub-item"><span> └ 超過回復:</span> <span>${charStats.totalOverheal.toLocaleString()}</span></div>
+                        <div style="margin-top: 10px;"><span data-tooltip-text="${hitCount} / ${charStats.attacksMade}">命中率:</span> <span>${hitRate}%</span></div>
+                        <div><span data-tooltip-text="${charStats.criticalHits} / ${charStats.attacksMade}">攻撃会心率:</span> <span>${attackCritRate}%</span></div>
+                        <div><span data-tooltip-text="${charStats.totalCrits} / ${charStats.critableActions}">総合会心率:</span> <span>${overallCritRate}%</span></div>
+                        <div style="margin-top: 10px;"><span>消費SP:</span> <span>${charStats.totalSpConsumed.toLocaleString()}</span></div>
+                        <div><span>消費MP:</span> <span>${charStats.totalMpConsumed.toLocaleString()}</span></div>
+                    </div>
+                    <div class="accordion-summary">
+                        <h3>被ダメージ・生存</h3>
+                        <div><span>被ダメージ:</span> <span>${charStats.totalDamageTaken.toLocaleString()}</span></div>
+                        <div><span>一撃最大:</span> <span>${charStats.maxSingleHitTaken.toLocaleString()}</span></div>
+                        <div style="margin-top: 10px;"><span>被HP回復:</span> <span>${totalHealingTaken.toLocaleString()}</span></div>
+                        <div class="sub-item"><span> └ スキル:</span> <span>${charStats.totalHealingTakenFromSkills.toLocaleString()}</span></div>
+                        <div class="sub-item"><span> └ 自然回復:</span> <span>${charStats.totalHealingTakenFromNaturalRegen.toLocaleString()}</span></div>
+                        <div style="margin-top: 10px;"><span data-tooltip-text="${charStats.evasions} / ${charStats.attacksReceived}">回避率:</span> <span>${evasionRate}%</span></div>
+                    </div>
                 </div>
                 <div class="accordion-details">
                     <div class="stats-tabs">
@@ -727,38 +854,69 @@
                 </div>
             </div>`;
     }
-     function renderGraph(turnData, characters, dataType = 'hp') {
+
+     function renderGraph(analysisResult) {
         if (chartInstance) chartInstance.destroy();
         const ctx = document.getElementById('hp-chart');
-        if (!ctx || !turnData) return;
+        if (!ctx || !analysisResult) return;
+
+        const { characters, turnData } = analysisResult;
+        const dataType = document.getElementById('graph-data-select').value;
+        const buffDebuffControls = document.getElementById('buff-debuff-controls');
+
+        let datasets = [];
+        let yAxisLabel = '';
 
         const teamColors = {
             '0': ['rgba(54, 162, 235, 1)', 'rgba(137, 207, 240, 1)', 'rgba(0, 119, 182, 1)', 'rgba(30, 144, 255, 1)'],
             '1': ['rgba(255, 99, 132, 1)', 'rgba(255, 182, 193, 1)', 'rgba(210, 4, 45, 1)', 'rgba(255, 20, 147, 1)']
         };
-        const datasets = characters.map((char, i) => {
-            const team = char.team;
-            const color = teamColors[team][i % teamColors[team].length];
-            let dataToShow = turnData.datasets[char.cname][dataType];
 
-            if (dataType !== 'hp') {
-                 dataToShow = dataToShow.reduce((acc, val, i) => {
-                     acc.push((acc[i - 1] || 0) + val);
-                     return acc;
-                 }, []);
+        if (dataType === 'buffDebuff') {
+            buffDebuffControls.style.display = 'flex';
+            const selectedChar = document.getElementById('char-select-for-graph').value;
+            const selectedStatus = document.getElementById('status-select-for-graph').value;
+
+            if (selectedChar && selectedStatus) {
+                const charData = turnData.datasets[selectedChar];
+                const statusData = charData.states.map(s => s[selectedStatus] || 0);
+
+                const color = teamColors[charData.team][characters.findIndex(c=>c.cname === selectedChar) % teamColors[charData.team].length];
+
+                datasets.push({
+                    label: `${selectedChar} - ${selectedStatus}`, data: statusData,
+                    borderColor: color, backgroundColor: color.replace('1)', '0.1)'),
+                    tension: 0.1, borderWidth: 2, fill: false
+                });
+                yAxisLabel = `${selectedStatus} 深度`;
             }
+        } else {
+            buffDebuffControls.style.display = 'none';
+            datasets = characters.map((char, i) => {
+                const team = char.team;
+                const color = teamColors[team][i % teamColors[team].length];
+                let dataToShow = turnData.datasets[char.cname][dataType];
 
-            return {
-                label: char.cname, data: dataToShow, borderColor: color,
-                backgroundColor: color.replace('1)', '0.1)'),
-                tension: 0.1, borderWidth: 2, fill: false
-            };
-        });
+                if (dataType.startsWith('turn')) { // 累積グラフ
+                    dataToShow = dataToShow.reduce((acc, val, i) => {
+                        acc.push((acc[i - 1] || 0) + val);
+                        return acc;
+                    }, []);
+                }
 
-        const yAxisLabel = {
-            'hp': 'HP', 'turnDamageDealt': '与ダメージ (累積)',
-            'turnDamageTaken': '被ダメージ (累積)', 'turnHealingDone': '与回復量 (累積)'
-        }[dataType];
+                return {
+                    label: char.cname, data: dataToShow, borderColor: color,
+                    backgroundColor: color.replace('1)', '0.1)'),
+                    tension: 0.1, borderWidth: 2, fill: false
+                };
+            });
+            yAxisLabel = {
+                'hp': 'HP', 'sp': 'SP', 'mp': 'MP',
+                'turnDamageDealt': '与ダメージ (累積)',
+                'turnDamageTaken': '被ダメージ (累積)',
+                'turnHealingDone': '与回復量 (累積)'
+            }[dataType];
+        }
 
         chartInstance = new Chart(ctx.getContext('2d'), {
             type: 'line', data: { labels: turnData.labels, datasets: datasets },
@@ -868,7 +1026,7 @@
             if (statsContainer) {
                 statsContainer.addEventListener('mouseover', e => {
                     if (e.target.dataset.tooltipText) {
-                        tooltip.innerHTML = `<strong>${e.target.dataset.tooltipText}</strong>`;
+                        tooltip.innerHTML = `<strong>${e.target.dataset.tooltipText.replace(/\n/g, '<br>')}</strong>`;
                         tooltip.style.display = 'block';
                     }
                 });
