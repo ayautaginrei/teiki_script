@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ニワGFRe マッピングヘルパー
 // @namespace    http://tampermonkey.net/
-// @version      1.1
+// @version      1.2
 // @description  ニワGFReのマップ情報をスプレッドシートに対応した形式でコピーし、貼り付け座標も通知します。
 // @author       ayautaginrei(gemini)
 // @updateURL    https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/soraniwa/%E3%83%8B%E3%83%AFGFRe%20%E3%83%9E%E3%83%83%E3%83%94%E3%83%B3%E3%82%B0%E3%83%98%E3%83%AB%E3%83%91%E3%83%BC.user.js
@@ -27,6 +27,7 @@
         '#44dddd': 11,
         '#dd5522': 12,
         '#305020': 13,
+        '#086633': 14,
         '#ff00ff': 0, '#221005': 0
     };
 
