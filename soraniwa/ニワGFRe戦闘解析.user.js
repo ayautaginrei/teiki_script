@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ニワGFRe戦闘解析
 // @namespace    http://tampermonkey.net/
-// @version      1.2
+// @version      1.3
 // @description  Stroll Greenの戦闘ログに動的なステータスパネルを追加し、キャラクター個別の戦闘統計・グラフ・詳細な行動分析機能を提供します。
 // @author       ayautaginrei(gemini)
 // @match        https://soraniwa.428.st/gf/result/*
@@ -119,12 +119,12 @@
         .stats-team-header:first-child { margin-top: 0; }
         .graph-controls { margin-bottom: 10px; text-align: center; display: flex; gap: 15px; justify-content: center; align-items: center; flex-wrap: wrap;}
 
-        /* --- Accordion Styles (今回の修正箇所) --- */
+        /* Accordion Styles */
         .accordion-detail-row { display: none; }
         .accordion-detail-cell { padding: 15px !important; background-color: var(--accordion-detail-bg); }
         .accordion-body { display: flex; flex-direction: column; gap: 15px; }
         .accordion-summary-wrapper { display: flex; gap: 20px; flex-wrap: wrap; }
-        .accordion-summary { flex: 1; min-width: 280px; font-size: 14px; }
+        .accordion-summary { flex: 1; min-width: 220px; font-size: 13px; }
         .accordion-summary h3 { margin-top: 0; border-bottom: 1px solid #ccc; padding-bottom: 5px; font-size: 1.1em; }
         .accordion-summary div { display: flex; justify-content: space-between; margin-bottom: 6px; }
         .accordion-summary div span:first-child { font-weight: bold; color: #333; }
@@ -311,11 +311,24 @@
                         id: `action-${actionCounter++}`, turn: currentTurn, actor: currentActor, skill: skillName,
                         events: [], spCost: 0, mpCost: 0,
                         isPreceding: isPreceding,
-                        isStepSkill: false, // デフォルトはfalseに設定
+                        isStepSkill: false,
                         isConnectSkill: false,
                         beforeState: beforeActionStates[currentActor],
-                        afterState: null
+                        afterState: null,
+                        stpValues: {}
                     };
+
+                    const smallNode = node.querySelector('small');
+                    if (smallNode) {
+                        const typeSpans = smallNode.querySelectorAll('span[class*="type"]');
+                        typeSpans.forEach(span => {
+                            const stpMatch = span.textContent.match(/★(.+?)(\d+)%/);
+                            if (stpMatch) {
+                                currentAction.stpValues[stpMatch[1]] = parseInt(stpMatch[2], 10);
+                            }
+                        });
+                    }
+
                 } else if (connectMatch) {
                     pushCurrentAction();
                     currentActor = connectMatch[1].trim();
@@ -328,17 +341,15 @@
                         isStepSkill: false,
                         isConnectSkill: true,
                         beforeState: beforeActionStates[currentActor],
-                        afterState: null
+                        afterState: null,
+                        stpValues: {}
                     };
                 }
 
 
                 if (currentAction) {
-                    // --- ステップスキル判定ロジックを修正 ---
-                    // このログにステップスキル発動マーカーが含まれていれば、*現在*のアクションにフラグを立てる
                     if (text.includes('ステップスキル発動！')) {
                         currentAction.isStepSkill = true;
-                        // マーカーの直後に本当のスキル名が表示されるため、スキル名を再取得して更新する
                         currentAction.skill = getSkillName(node.nextElementSibling);
                     }
 
@@ -346,6 +357,8 @@
                     const healRegex = /(.+?) のHPが <b([^>]*)>(.+?)<\/b> 回復！！/g;
                     const evadeRegex = /(.+?) は攻撃を回避した！！/g;
                     const buffRegex = /(.*?) に (?:<b>)?(.+?)(?:<\/b>)? を <b([^>]*)>(\d+)<\/b> 付与！！/g;
+                    const connectIncreaseRegex = /(.+?) のコネクトカウントが (?:<b.*?>)?([\d,]+)(?:<\/b>)? 増加！！/g;
+                    const connectActivateRegex = /(.+?) のスキル「.+?」がコネクトした！/g;
 
 
                     for (const m of html.matchAll(damageRegex)) {
@@ -364,6 +377,13 @@
                             currentAction.events.push({ type: statusDetails[stateName].type, status: stateName, target: m[1].trim(), value: parseInt(m[4], 10), is_critical: m[3].includes('cri') });
                         }
                     }
+                    for (const m of html.matchAll(connectIncreaseRegex)) {
+                        currentAction.events.push({ type: 'connect_increase', target: m[1].trim(), value: parseInt(m[2].replace(/,/g, ''), 10) });
+                    }
+                    for (const m of text.matchAll(connectActivateRegex)) {
+                        currentAction.events.push({ type: 'connect_activate', target: m[1].trim() });
+                    }
+
 
                     if (text.match(/(.+) を打倒した！！|(.+) は戦闘を離脱した！！/)) {
                         const defeatedMatch = text.match(/(.+) (を打倒した！！|は戦闘を離脱した！！)/);
@@ -388,12 +408,15 @@
                 buffsAppliedDetails: {}, debuffsAppliedDetails: {},
                 buffsReceivedDetails: {}, debuffsReceivedDetails: {},
                 skills: {}, actions: [], damageTakenLog: [],
-                // --- NEW STATS ---
                 totalDamageToEnemies: 0, totalDamageToAllies: 0, totalDamageToSelf: 0,
                 totalHealingToAllies: 0, totalHealingToSelf: 0, totalOverheal: 0,
                 maxSingleHitDealt: 0, maxSingleHitTaken: 0,
                 attacksEvadedByOpponents: 0,
-                totalHealingTakenFromSkills: 0, totalHealingTakenFromNaturalRegen: 0
+                totalHealingTakenFromSkills: 0, totalHealingTakenFromNaturalRegen: 0,
+                totalConnectGiven: 0,
+                totalConnectReceived: 0,
+                connectSkillInvocations: 0,
+                totalStpGained: {} // ★★★ 修正箇所 ★★★ 累計STP獲得量を格納するオブジェクトを追加
             };
         });
 
@@ -414,11 +437,28 @@
             }
         });
 
+        const lastStpValues = {};
 
         battleActions.forEach(action => {
             if (!action || !action.actor) return;
             const actorStats = finalStats[action.actor];
             if (!actorStats) return;
+
+            if (action.isConnectSkill) {
+                actorStats.connectSkillInvocations++;
+            }
+
+            const currentStps = action.stpValues || {};
+            const previousStps = lastStpValues[action.actor] || {};
+            for (const type in currentStps) {
+                const currentValue = currentStps[type];
+                const previousValue = previousStps[type] || 0;
+                const gain = currentValue - previousValue;
+                if (gain > 0) {
+                    actorStats.totalStpGained[type] = (actorStats.totalStpGained[type] || 0) + gain;
+                }
+            }
+            lastStpValues[action.actor] = { ...previousStps, ...currentStps };
 
             actorStats.actions.push(action);
             actorStats.totalSpConsumed += action.spCost;
@@ -510,6 +550,17 @@
                     if(finalStats[event.target]) {
                         finalStats[event.target].debuffsReceived += event.value;
                         finalStats[event.target].debuffsReceivedDetails[event.status] = (finalStats[event.target].debuffsReceivedDetails[event.status] || 0) + event.value;
+                    }
+                } else if (event.type === 'connect_increase') {
+                    // 与コネクトカウント（自身・味方問わず）
+                    actorStats.totalConnectGiven += event.value;
+
+                    // 被コネクトカウント（味方からのみ）
+                    if (action.actor !== event.target) {
+                        const receiverStats = finalStats[event.target];
+                        if (receiverStats) {
+                            receiverStats.totalConnectReceived += event.value;
+                        }
                     }
                 }
             });
@@ -717,7 +768,7 @@
             });
         });
 
-        // 3. アコーディオン内部のタブ切り替え（generateDetailContentで生成される要素に対するイベントリスナー）
+        // 3. アコーディオン内部のタブ切り替え
         summaryDiv.addEventListener('click', e => {
              if (e.target.matches('.accordion-details .stats-tab-button')) {
                 const button = e.target;
@@ -758,7 +809,6 @@
         const charStats = stats[charName];
         if (!charStats) return '';
 
-        // ★★★ この関数内で、表示に必要なHTML文字列を事前に生成します ★★★
         let skillsHtml = `<table class="stats-table"><thead><tr><th>スキル名</th><th>回数</th><th>総ダメ/回復</th><th>平均</th><th>会心率</th><th>消費SP</th><th>消費MP</th></tr></thead><tbody>`;
         for (const skillName in charStats.skills) {
             const skill = charStats.skills[skillName];
@@ -770,7 +820,7 @@
         }
         skillsHtml += `</tbody></table>`;
 
-        let actionsHtml = `<table class="stats-table"><thead><tr><th>T</th><th>スキル</th><th>消費SP/MP</th><th>実行時状態</th><th>効果詳細</th></tr></thead><tbody>`;
+        let actionsHtml = `<table class="stats-table"><thead><tr><th>T</th><th>スキル</th><th>消費SP/MP</th><th>STP値</th><th>実行時状態</th><th>効果詳細</th></tr></thead><tbody>`;
         charStats.actions.forEach(action => {
             const effects = action.events.map(e => {
                 let text = e.target ? `${e.target}: ` : '';
@@ -792,10 +842,13 @@
                 rowClass = 'step-skill-row';
             }
 
-            // 行動実行前の状態（バフ・デバフ）を取得して表示
             const statesHtml = action.beforeState && action.beforeState.states.length > 0 ? action.beforeState.states.join('<br>') : '-';
 
-            actionsHtml += `<tr class="${rowClass}"><td>${action.turn}</td><td style="text-align:left">${prefix}${action.skill}</td><td>${action.spCost}/${action.mpCost}</td><td style="text-align:left; font-size: 11px;">${statesHtml}</td><td style="text-align:left;">${effects || '-'}</td></tr>`;
+            const stpHtml = Object.entries(action.stpValues || {})
+                .map(([name, value]) => `${name}: ${value}%`)
+                .join('<br>');
+
+            actionsHtml += `<tr class="${rowClass}"><td>${action.turn}</td><td style="text-align:left">${prefix}${action.skill}</td><td>${action.spCost}/${action.mpCost}</td><td style="font-size: 11px;">${stpHtml || '-'}</td><td style="text-align:left; font-size: 11px;">${statesHtml}</td><td style="text-align:left;">${effects || '-'}</td></tr>`;
         });
         actionsHtml += `</tbody></table>`;
 
@@ -813,7 +866,12 @@
         const attackCritRate = charStats.attacksMade > 0 ? (charStats.criticalHits / charStats.attacksMade * 100).toFixed(1) : '0.0';
         const overallCritRate = charStats.critableActions > 0 ? (charStats.totalCrits / charStats.critableActions * 100).toFixed(1) : '0.0';
 
-        // --- ★★★ ここからが今回の修正箇所 ★★★ ---
+        // ★★★ 修正箇所 ★★★ 累計STP値を表示用に整形
+        const totalStpGainedHtml = Object.entries(charStats.totalStpGained)
+            .sort((a, b) => b[1] - a[1]) // 値の大きい順にソート
+            .map(([type, value]) => `${type}:+${value}%`)
+            .join(' ');
+
         return `
             <div class="accordion-body">
                 <div class="accordion-summary-wrapper">
@@ -831,6 +889,7 @@
                         <div><span data-tooltip-text="${charStats.totalCrits} / ${charStats.critableActions}">総合会心率:</span> <span>${overallCritRate}%</span></div>
                         <div style="margin-top: 10px;"><span>消費SP:</span> <span>${charStats.totalSpConsumed.toLocaleString()}</span></div>
                         <div><span>消費MP:</span> <span>${charStats.totalMpConsumed.toLocaleString()}</span></div>
+                        <div style="margin-top: 10px;"><span data-tooltip-text="各タイプで戦闘中に蓄積したSTPの合計値">総獲得STP:</span> <span style="font-size: 11px;">${totalStpGainedHtml || '0%'}</span></div>
                     </div>
                     <div class="accordion-summary">
                         <h3>被ダメージ・生存</h3>
@@ -840,6 +899,12 @@
                         <div class="sub-item"><span> └ スキル:</span> <span>${charStats.totalHealingTakenFromSkills.toLocaleString()}</span></div>
                         <div class="sub-item"><span> └ 自然回復:</span> <span>${charStats.totalHealingTakenFromNaturalRegen.toLocaleString()}</span></div>
                         <div style="margin-top: 10px;"><span data-tooltip-text="${charStats.evasions} / ${charStats.attacksReceived}">回避率:</span> <span>${evasionRate}%</span></div>
+                    </div>
+                    <div class="accordion-summary">
+                        <h3>コネクト貢献</h3>
+                        <div><span>総与コネクトカウント:</span> <span>${charStats.totalConnectGiven.toLocaleString()}</span></div>
+                        <div><span>被コネクトカウント:</span> <span>${charStats.totalConnectReceived.toLocaleString()}</span></div>
+                        <div style="margin-top: 10px;"><span>コネクトスキル発動回数:</span> <span>${charStats.connectSkillInvocations.toLocaleString()} 回</span></div>
                     </div>
                 </div>
                 <div class="accordion-details">
