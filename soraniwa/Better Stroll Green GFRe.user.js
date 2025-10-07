@@ -5,7 +5,7 @@
 // @description  Stroll GreenのUIを改善します。
 // @author       ayautaginrei(Gemini)
 // @match        https://soraniwa.428.st/gf/*
-// @updateURL    https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/soraniwa/Better%20Stroll%20Green%20GFRe-1.0.user.js
+// @updateURL    https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/soraniwa/Better%20Stroll%20Green%20GFRe.user.js
 // @grant        none
 // @run-at       document-start
 // ==/UserScript==
