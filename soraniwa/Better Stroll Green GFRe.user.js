@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Stroll Green GFRe
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.1
 // @description  Stroll GreenのUIを改善します。
 // @author       ayautaginrei(Gemini)
 // @match        https://soraniwa.428.st/gf/*
@@ -11,389 +11,382 @@
 // ==/UserScript==
 
 (function() {
-    'use strict';
+    'useSTRICT';
 
-    // ストレージキー
-    const YUIN_KEY = 'yuuinCount';
-    const PREV_YUIN_KEY = 'prevYuuinCount';
-    const KIHI_KEY = 'kihiCount';
-    const PREV_KIHI_KEY = 'prevKihiCount';
+    // === 共通ストレージキー ===
+    const STORAGE_KEYS = {
+        YUIN: 'yuuinCount',
+        PREV_YUIN: 'prevYuuinCount',
+        KIHI: 'kihiCount',
+        PREV_KIHI: 'prevKihiCount',
+        HIGHLIGHT_CONFIG: 'strollGreenStatHighlighterConfig_v1'
+    };
 
-    // 数値を抽出する関数（テーブルから「誘引」「忌避」関連の数値を合計）
+    // === 誘引・忌避・花壇・折りたたみ機能 ===
+
     function extractCounts(table) {
-        let yuuin = 0;
-        let kihi = 0;
-        const rows = table.querySelectorAll('tr.odd, tr.even');
-        rows.forEach(row => {
+        const counts = { yuuin: 0, kihi: 0 };
+        table.querySelectorAll('tr.odd, tr.even').forEach(row => {
             const cells = row.querySelectorAll('td');
-            if (cells.length >= 3) {
-                const nameText = cells[1].textContent.trim();
-                const countText = cells[2].textContent.trim();
-                const count = parseInt(countText.match(/\d+/)) || 0;
-                if (count > 0) {
-                    if (/誘引/.test(nameText)) {
-                        yuuin += count;
-                    } else if (/忌避/.test(nameText)) {
-                        kihi += count;
-                    }
-                }
+            if (cells.length < 3) return;
+
+            const name = cells[1].textContent;
+            const count = parseInt(cells[2].textContent.match(/\d+/)) || 0;
+            if (count > 0) {
+                if (name.includes('誘引')) counts.yuuin += count;
+                else if (name.includes('忌避')) counts.kihi += count;
             }
         });
-        return { yuuin, kihi };
+        return counts;
     }
 
+    function createOrUpdateLabel(parent, id, label, tooltip, value, insertAfter, addBrAfter = true) {
+        let elem = parent.querySelector(`#${id}`);
+        if (!elem) {
+            elem = document.createElement('div');
+            elem.id = id;
+            elem.className = 'labelb';
+            elem.innerHTML = `
+                <div class="labelbleft" data-ctip="${tooltip}">${label}</div>
+                <div class="labelbright labelbrightcell2">${value}</div>
+            `;
 
-    // 表示要素を作成・更新する関数（labelb形式で調子とAPの間に挿入）
+            if (insertAfter && insertAfter.nextElementSibling?.tagName === 'BR') {
+                insertAfter.nextElementSibling.remove();
+            }
+
+            if (insertAfter) {
+                parent.insertBefore(elem, insertAfter.nextElementSibling);
+                if (addBrAfter) {
+                    parent.insertBefore(document.createElement('br'), elem.nextElementSibling);
+                }
+            } else {
+                parent.appendChild(elem);
+                if (addBrAfter) {
+                    parent.appendChild(document.createElement('br'));
+                }
+            }
+        } else {
+            const valueElem = elem.querySelector('.labelbright');
+            if (valueElem.textContent !== value.toString()) {
+                valueElem.textContent = value;
+            }
+        }
+        return elem;
+    }
+
     function updateDisplay(mapdesc) {
-        const yuuin = parseInt(localStorage.getItem(YUIN_KEY) || '0');
-        const kihi = parseInt(localStorage.getItem(KIHI_KEY) || '0');
+        const yuuin = localStorage.getItem(STORAGE_KEYS.YUIN) || '0';
+        const kihi = localStorage.getItem(STORAGE_KEYS.KIHI) || '0';
+        const condLabel = mapdesc.querySelector('.labelb .labelbleft[data-ctip*="移動力"]')?.closest('.labelb');
+        if (!condLabel) return;
 
-        // 誘引のlabelb
-        let yuinElem = mapdesc.querySelector('#custom-yuin-display');
-        if (!yuinElem) {
-            yuinElem = document.createElement('div');
-            yuinElem.id = 'custom-yuin-display';
-            yuinElem.className = 'labelb';
-            yuinElem.innerHTML = `
-                <div class="labelbleft" data-ctip="誘引の値です。">誘引</div>
-                <div class="labelbright labelbrightcell2">${yuuin}</div>
-            `;
-            // 調子のlabelbの直後に挿入
-            const condLabel = mapdesc.querySelector('.labelb .labelbleft[data-ctip*="移動力"]')?.closest('.labelb');
-            if (condLabel && condLabel.nextElementSibling) {
-                if (condLabel.nextElementSibling.tagName === 'BR') {
-                    condLabel.nextElementSibling.remove();
-                }
-                condLabel.parentNode.insertBefore(yuinElem, condLabel.nextElementSibling);
-                condLabel.parentNode.insertBefore(document.createElement('br'), yuinElem.nextElementSibling);
-            } else {
-                mapdesc.appendChild(yuinElem);
-            }
-        } else {
-            const valueElem = yuinElem.querySelector('.labelbright');
-            if (valueElem && valueElem.textContent !== yuuin.toString()) {
-                valueElem.textContent = yuuin;
-            }
-        }
-
-        // 忌避のlabelb
-        let kihiElem = mapdesc.querySelector('#custom-kihi-display');
-        if (!kihiElem) {
-            kihiElem = document.createElement('div');
-            kihiElem.id = 'custom-kihi-display';
-            kihiElem.className = 'labelb';
-            kihiElem.innerHTML = `
-                <div class="labelbleft" data-ctip="忌避の値です。">忌避</div>
-                <div class="labelbright labelbrightcell2">${kihi}</div>
-            `;
-            // 誘引のlabelbの直後に挿入
-            if (yuinElem && yuinElem.nextElementSibling) {
-                if (yuinElem.nextElementSibling.tagName === 'BR') {
-                    yuinElem.nextElementSibling.remove();
-                }
-                yuinElem.parentNode.insertBefore(kihiElem, yuinElem.nextElementSibling);
-                if (!kihiElem.nextElementSibling || kihiElem.nextElementSibling.tagName !== 'BR') {
-                    yuinElem.parentNode.insertBefore(document.createElement('br'), kihiElem.nextElementSibling);
-                }
-            } else {
-                mapdesc.appendChild(kihiElem);
-            }
-        } else {
-            const valueElem = kihiElem.querySelector('.labelbright');
-            if (valueElem && valueElem.textContent !== kihi.toString()) {
-                valueElem.textContent = kihi;
-            }
-        }
+        const yuinElem = createOrUpdateLabel(mapdesc, 'custom-yuin-display', '誘引', '誘引の値です。', yuuin, condLabel, true);
+        createOrUpdateLabel(mapdesc, 'custom-kihi-display', '忌避', '忌避の値です。', kihi, yuinElem, false);
     }
 
+    function convertSelectToButtons(select) {
+        select.style.display = 'none';
+        select.dataset.buttonsAdded = 'true';
 
-    // デバウンス用
-    let isProcessing = false;
-    function debounceProcess(callback) {
-        if (isProcessing) return;
-        isProcessing = true;
-        setTimeout(() => {
-            callback();
-            isProcessing = false;
-        }, 100);
-    }
+        const container = document.createElement('div');
+        container.style.cssText = `display: flex; flex-wrap: nowrap; gap: 4px; margin-top: 2px; margin-bottom: 5px; max-width: 100%; overflow-x: auto; padding: 2px;`;
 
-    // queryButtonのクリックハンドラ（誘引と忌避を両方減少）
-    function handleQueryButtonClick() {
-        const currentYuuin = parseInt(localStorage.getItem(YUIN_KEY) || '0');
-        const currentKihi = parseInt(localStorage.getItem(KIHI_KEY) || '0');
+        const textMap = { '★育成促進': '育成促進', '★切り戻し': '切り戻す' };
 
-        if (currentYuuin > 0) {
-            localStorage.setItem(PREV_YUIN_KEY, localStorage.getItem(YUIN_KEY) || '0');
-            localStorage.setItem(YUIN_KEY, (currentYuuin - 1).toString());
-        }
-        if (currentKihi > 0) {
-            localStorage.setItem(PREV_KIHI_KEY, localStorage.getItem(KIHI_KEY) || '0');
-            localStorage.setItem(KIHI_KEY, (currentKihi - 1).toString());
-        }
+        Array.from(select.options).forEach(option => {
+            if (option.value === '0') return;
 
-        // 表示を即時更新
-        const mapdescs = document.querySelectorAll('.mapdesc');
-        mapdescs.forEach(mapdesc => {
-            updateDisplay(mapdesc);
+            const button = document.createElement('span');
+            const baseText = option.text.substring(0, option.text.indexOf('(')).trim();
+            button.textContent = textMap[baseText] || option.text;
+            button.dataset.value = option.value;
+            button.style.cssText = `padding: 3px 6px; border: 1px solid #a08060; border-radius: 5px; cursor: pointer; background-color: #fffff0; white-space: nowrap; font-size: 12px;`;
+
+            button.addEventListener('click', () => {
+                const isSelected = select.value === option.value;
+                select.value = isSelected ? '0' : option.value;
+                select.dispatchEvent(new Event('change', { bubbles: true }));
+
+                container.querySelectorAll('span').forEach(btn => {
+                    btn.style.backgroundColor = '#fffff0';
+                    btn.style.fontWeight = 'normal';
+                });
+
+                if (!isSelected) {
+                    button.style.backgroundColor = '#e0ecff';
+                    button.style.fontWeight = 'bold';
+                }
+            });
+            container.appendChild(button);
         });
+
+        select.parentNode.insertBefore(container, select);
+
+        const selectedButton = container.querySelector(`[data-value="${select.value}"]`);
+        if (selectedButton) {
+            selectedButton.style.backgroundColor = '#e0ecff';
+            selectedButton.style.fontWeight = 'bold';
+        }
     }
 
-    // queryButtonにイベントリスナーを追加
-    function setupQueryButtonListeners() {
-        const buttons = document.querySelectorAll('.queryButton:not([data-listener-added])');
-        buttons.forEach(button => {
+    function handleQueryButtonClick() {
+        ['YUIN', 'KIHI'].forEach(type => {
+            const currentVal = parseInt(localStorage.getItem(STORAGE_KEYS[type]) || '0');
+            if (currentVal > 0) {
+                localStorage.setItem(STORAGE_KEYS[`PREV_${type}`], currentVal.toString());
+                localStorage.setItem(STORAGE_KEYS[type], (currentVal - 1).toString());
+            }
+        });
+        document.querySelectorAll('.mapdesc').forEach(updateDisplay);
+    }
+
+    function processDOMChanges() {
+        const bagTable = document.getElementById('bag');
+        if (bagTable && window.location.href.includes('mode=item')) {
+            setTimeout(() => {
+                const { yuuin, kihi } = extractCounts(bagTable);
+                localStorage.setItem(STORAGE_KEYS.YUIN, yuuin.toString());
+                localStorage.setItem(STORAGE_KEYS.KIHI, kihi.toString());
+            }, 500);
+        }
+
+        document.querySelectorAll('select[name^="kadanact"]:not([data-buttons-added])').forEach(convertSelectToButtons);
+        document.querySelectorAll('.mapdesc').forEach(updateDisplay);
+
+        document.querySelectorAll('.queryButton:not([data-listener-added])').forEach(button => {
             button.dataset.listenerAdded = 'true';
             button.addEventListener('click', handleQueryButtonClick);
         });
     }
 
-    const observer = new MutationObserver((mutations, obs) => {
-        debounceProcess(() => {
-            obs.disconnect();
+    function addToggle(header, index) {
+        if (header.dataset.collapsibleAdded) return;
+        header.dataset.collapsibleAdded = 'true';
 
-            // ■ アイテム設定ページの処理
-            const inventoryButton = document.getElementById('inventory');
-            const itemList = document.getElementById('itemlist');
-            if (inventoryButton && itemList && itemList.hasChildNodes()) {
-                if (!inventoryButton.dataset.clickedByScript) {
-                    inventoryButton.dataset.clickedByScript = 'true';
-                    setTimeout(() => {
-                        inventoryButton.click();
-                    }, 200);
-                }
-            }
+        header.innerHTML = `<span class="toggle-icon" style="user-select: none;">▼</span> ${header.textContent.replace(/^[▼▲]\s*/, '')}`;
+        header.style.cursor = 'pointer';
 
-            // ■ 誘引/忌避の監視（itemページでのみ実行）
-            const bagTable = document.getElementById('bag');
-            if (bagTable && (window.location.href.includes('mode=item') || inventoryButton)) {
-                setTimeout(() => {
-                    const { yuuin, kihi } = extractCounts(bagTable);
-                    localStorage.setItem(PREV_YUIN_KEY, localStorage.getItem(YUIN_KEY) || '0');
-                    localStorage.setItem(PREV_KIHI_KEY, localStorage.getItem(KIHI_KEY) || '0');
-                    localStorage.setItem(YUIN_KEY, yuuin.toString());
-                    localStorage.setItem(KIHI_KEY, kihi.toString());
-                }, 500);
-            }
+        let content = header.nextElementSibling;
+        while (content && content.tagName !== 'P') content = content.nextElementSibling;
+        if (!content) return;
 
-            // ■ 各種行動ページの処理
-            const farmSelects = document.querySelectorAll('select[name^="kadanact"]:not([data-buttons-added])');
-            farmSelects.forEach(selectElement => {
-                selectElement.dataset.buttonsAdded = 'true';
+        content.style.cssText = 'max-height: 0px; overflow: hidden; opacity: 0; transition: all 0.3s ease-out;';
+        const storageKey = `area_state_${index}`;
 
-                const buttonContainer = document.createElement('div');
-                Object.assign(buttonContainer.style, {
-                    display: 'flex',
-                    flexWrap: 'nowrap',
-                    gap: '4px',
-                    marginTop: '2px',
-                    marginBottom: '5px',
-                    maxWidth: '100%',
-                    overflowX: 'auto',
-                    padding: '2px',
-                    border: 'none',
-                    borderRadius: '0'
-                });
-
-                const textMap = {
-                            '★育成促進(0/4) KP-1': '育成促進',
-                            '★育成促進(1/4) KP-1': '育成促進',
-                            '★育成促進(2/4) KP-1': '育成促進',
-                            '★育成促進(3/4) KP-1': '育成促進',
-                            '★育成促進(4/4) KP-1': '育成促進',
-                            '★切り戻し(0/4) KP-1': '切り戻す',
-                            '★切り戻し(1/4) KP-1': '切り戻す',
-                            '★切り戻し(2/4) KP-1': '切り戻す',
-                            '★切り戻し(3/4) KP-1': '切り戻す',
-                            '★切り戻し(4/4) KP-1': '切り戻す',
-                };
-
-                Array.from(selectElement.options).forEach(option => {
-                    if (option.value === '0') return;
-
-                    const button = document.createElement('span');
-                    button.textContent = textMap[option.text] || option.text;
-                    button.dataset.value = option.value;
-
-                    Object.assign(button.style, {
-                        padding: '3px 6px',
-                        border: '1px solid #a08060',
-                        borderRadius: '5px',
-                        cursor: 'pointer',
-                        backgroundColor: '#fffff0',
-                        whiteSpace: 'nowrap',
-                        fontSize: '12px',
-                        minWidth: 'auto'
-                    });
-
-                    button.addEventListener('click', () => {
-                        if (selectElement.value === option.value) {
-                            selectElement.value = '0';
-                            selectElement.dispatchEvent(new Event('change', { bubbles: true }));
-                            Array.from(buttonContainer.children).forEach(btn => {
-                                btn.style.backgroundColor = '#fffff0';
-                                btn.style.fontWeight = 'normal';
-                            });
-                        } else {
-                            selectElement.value = option.value;
-                            selectElement.dispatchEvent(new Event('change', { bubbles: true }));
-                            Array.from(buttonContainer.children).forEach(btn => {
-                                btn.style.backgroundColor = '#fffff0';
-                                btn.style.fontWeight = 'normal';
-                            });
-                            button.style.backgroundColor = '#e0ecff';
-                            button.style.fontWeight = 'bold';
-                        }
-                    });
-
-                    buttonContainer.appendChild(button);
-                });
-
-                selectElement.style.display = 'none';
-                selectElement.parentNode.insertBefore(buttonContainer, selectElement);
-
-                const initialSelectedButton = buttonContainer.querySelector(`[data-value="${selectElement.value}"]`);
-                if (initialSelectedButton) {
-                    initialSelectedButton.style.backgroundColor = '#e0ecff';
-                    initialSelectedButton.style.fontWeight = 'bold';
-                }
-            });
-
-            // ■ 表示ページの処理
-            const mapdescs = document.querySelectorAll('.mapdesc');
-            mapdescs.forEach(mapdesc => {
-                updateDisplay(mapdesc);
-            });
-
-            // ■ queryButtonのリスナー設定
-            setupQueryButtonListeners();
-
-            obs.observe(document.documentElement, {
-                childList: true,
-                subtree: true
-            });
-        });
-    });
-
-    observer.observe(document.documentElement, {
-        childList: true,
-        subtree: true
-    });
-
-(function() {
-    'use strict';
-
-    // エリアにトグル機能を追加
-    function addToggle(areaHeader, index) {
-        if (areaHeader.dataset.collapsibleAdded) return; // 重複防止
-        areaHeader.dataset.collapsibleAdded = 'true';
-
-        // エリア名に▼を追加
-        const originalText = areaHeader.textContent;
-        areaHeader.innerHTML = `<span class="toggle-icon">▼</span> ${originalText}`;
-        areaHeader.style.cursor = 'pointer';
-        areaHeader.style.display = 'flex';
-        areaHeader.style.alignItems = 'center';
-        areaHeader.style.gap = '5px';
-
-        // 直後の<p>タグを取得（<br>をスキップ）
-        let content = areaHeader.nextElementSibling;
-        while (content && content.tagName !== 'P') {
-            content = content.nextElementSibling;
-        }
-        if (!content) {
-            console.warn(`No <p> found after ${areaHeader.textContent}`);
-            return;
-        }
-
-        // 初期状態で非表示
-        content.style.maxHeight = '0px';
-        content.style.overflow = 'hidden';
-        content.style.display = 'block';
-        content.style.opacity = '0';
-
-        // トグル機能
-        areaHeader.addEventListener('click', (e) => {
-            e.preventDefault(); // フォーム送信防止
-            e.stopPropagation(); // 他のイベントとの競合防止
+        header.addEventListener('click', (e) => {
+            e.preventDefault();
             const isHidden = content.style.maxHeight === '0px';
             content.style.maxHeight = isHidden ? `${content.scrollHeight}px` : '0px';
             content.style.opacity = isHidden ? '1' : '0';
-            areaHeader.querySelector('.toggle-icon').textContent = isHidden ? '▲' : '▼';
-            // 状態をlocalStorageに保存
-            localStorage.setItem(`area_state_${index}`, isHidden ? 'block' : 'none');
+            header.querySelector('.toggle-icon').textContent = isHidden ? '▲' : '▼';
+            localStorage.setItem(storageKey, isHidden ? 'open' : 'closed');
         });
 
-        // 初期状態を復元
-        const savedState = localStorage.getItem(`area_state_${index}`);
-        if (savedState === 'block') {
+        if (localStorage.getItem(storageKey) === 'open') {
             content.style.maxHeight = `${content.scrollHeight}px`;
             content.style.opacity = '1';
-            areaHeader.querySelector('.toggle-icon').textContent = '▲';
+            header.querySelector('.toggle-icon').textContent = '▲';
         }
     }
 
-    // モーダル内のエリアを初期化
-    function initializeCollapsible() {
+    function initCollapsibleAreas() {
         const modal = document.querySelector('#modal6');
-        if (!modal) {
-            console.warn('Modal #modal6 not found');
-            return;
-        }
+        if (!modal) return;
 
-        const areaHeaders = modal.querySelectorAll('h4');
-        areaHeaders.forEach((areaHeader, index) => {
-            if (areaHeader.textContent.startsWith('エリア')) {
-                addToggle(areaHeader, index);
+        const applyToggles = () => {
+             modal.querySelectorAll('h4').forEach((header, index) => {
+                if (header.textContent.startsWith('エリア')) {
+                    addToggle(header, index);
+                }
+            });
+        };
+
+        const observer = new MutationObserver((mutations) => {
+            for (const mutation of mutations) {
+                if ((mutation.type === 'attributes' && mutation.attributeName === 'style' && modal.style.display !== 'none') || mutation.type === 'childList') {
+                    applyToggles();
+                    return;
+                }
+            }
+        });
+
+        observer.observe(modal, { attributes: true, childList: true, subtree: true });
+
+        if (modal.style.display !== 'none') {
+            applyToggles();
+        }
+    }
+
+
+    // === ステータスハイライト機能 ===
+
+    const DEFAULT_HIGHLIGHT_SETTINGS = [
+        { threshold: 900, color: '#FF6B6B', enabled: true },
+        { threshold: 700, color: '#6BFF8A', enabled: true },
+        { threshold: 0, color: '#6B8AFF', enabled: true }
+    ];
+    const HIGHLIGHT_OPACITY = 0.3; // 30%
+
+    function hexToRgba(hex, alpha) {
+        hex = hex.replace('#', '');
+        if (hex.length === 3) {
+            hex = hex.split('').map(char => char + char).join('');
+        }
+        const r = parseInt(hex.slice(0, 2), 16);
+        const g = parseInt(hex.slice(2, 4), 16);
+        const b = parseInt(hex.slice(4, 6), 16);
+        if (isNaN(r) || isNaN(g) || isNaN(b)) return `rgba(255, 255, 255, ${alpha})`;
+        return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
+
+    function loadHighlightSettings() {
+        const stored = localStorage.getItem(STORAGE_KEYS.HIGHLIGHT_CONFIG);
+        let settings = DEFAULT_HIGHLIGHT_SETTINGS;
+        if (stored) {
+            try { settings = JSON.parse(stored); } catch (e) { settings = DEFAULT_HIGHLIGHT_SETTINGS; }
+        }
+        const finalSettings = [];
+        for (let i = 0; i < 3; i++) {
+            finalSettings.push(settings[i] || { threshold: 0, color: '#FFFFFF', enabled: false });
+        }
+        return finalSettings.slice(0, 3);
+    }
+
+    function saveHighlightSettings(settings) {
+        localStorage.setItem(STORAGE_KEYS.HIGHLIGHT_CONFIG, JSON.stringify(settings));
+    }
+
+    function applyHighlightColors() {
+        const settings = loadHighlightSettings();
+        const sortedSettings = settings
+            .filter(s => s.enabled)
+            .sort((a, b) => (b.threshold || 0) - (a.threshold || 0));
+
+        document.querySelectorAll('.charaframe, .charaframe2, .charaframeself').forEach(el => {
+            const total = (Number(el.dataset.str) || 0) +
+                          (Number(el.dataset.agi) || 0) +
+                          (Number(el.dataset.dex) || 0) +
+                          (Number(el.dataset.mag) || 0) +
+                          (Number(el.dataset.vit) || 0) +
+                          (Number(el.dataset.mnt) || 0);
+
+            let applied = false;
+            for (const setting of sortedSettings) {
+                if (total >= setting.threshold) {
+                    el.style.backgroundColor = hexToRgba(setting.color, HIGHLIGHT_OPACITY);
+                    applied = true;
+                    break;
+                }
+            }
+            if (!applied) {
+                el.style.backgroundColor = '';
             }
         });
     }
 
-    // モーダル表示を監視
-    function observeModal() {
-        const modal = document.querySelector('#modal6');
-        if (!modal) return;
+    function openHighlightModal() {
+        const settings = loadHighlightSettings();
+        const container = document.getElementById('settingsContainer');
+        container.innerHTML = '';
 
-        const observer = new MutationObserver((mutations) => {
-            mutations.forEach((mutation) => {
-                // モーダルが表示されたかチェック
-                if (mutation.type === 'attributes' && mutation.attributeName === 'style') {
-                    if (modal.style.display !== 'none') {
-                        console.log('Modal displayed, initializing collapsible');
-                        initializeCollapsible();
-                    }
-                }
-                // 新しいエリアが追加されたかチェック
-                if (mutation.addedNodes.length) {
-                    mutation.addedNodes.forEach((node) => {
-                        if (node.nodeType === 1) {
-                            if (node.tagName === 'H4' && node.textContent.startsWith('エリア')) {
-                                addToggle(node, document.querySelectorAll('#modal6 h4').length);
-                            }
-                            node.querySelectorAll('h4').forEach((areaHeader, index) => {
-                                if (areaHeader.textContent.startsWith('エリア')) {
-                                    addToggle(areaHeader, document.querySelectorAll('#modal6 h4').length + index);
-                                }
-                            });
-                        }
-                    });
-                }
-            });
+        settings.forEach((setting, index) => {
+            const rowHtml = `
+                <div class="setting-row" style="margin-bottom: 10px; display: flex; align-items: center; padding: 5px; border: 1px solid #ddd; background: #fff;">
+                    <input type="checkbox" class="setting-enabled" ${setting.enabled ? 'checked' : ''} style="margin-right: 10px; transform: scale(1.2);" id="setting_enabled_${index}">
+                    <label for="setting_enabled_${index}" style="margin-right: 10px; font-weight: bold; min-width: 60px;">設定 ${index + 1}:</label>
+                    <label for="setting_threshold_${index}" style="margin-right: 5px;">閾値:</label>
+                    <input type="number" class="setting-threshold" id="setting_threshold_${index}" value="${setting.threshold}" style="width: 80px; margin-right: 10px; padding: 5px;">
+                    <label for="setting_color_${index}" style="margin-right: 5px;">色:</label>
+                    <input type="color" class="setting-color" id="setting_color_${index}" value="${setting.color}" style="cursor: pointer;">
+                </div>
+            `;
+            container.insertAdjacentHTML('beforeend', rowHtml);
         });
-
-        observer.observe(modal, { attributes: true, childList: true, subtree: true });
+        document.getElementById('statHighlighterModal').style.display = 'block';
     }
 
-    // 初期化
-    window.addEventListener('load', () => {
-        // モーダルがすでに表示されている場合
-        if (document.querySelector('#modal6')?.style.display !== 'none') {
-            initializeCollapsible();
-        }
-        // モーダルの表示変更を監視
-        observeModal();
-    });
-})();
+    function closeHighlightModal() {
+        document.getElementById('statHighlighterModal').style.display = 'none';
+    }
 
+    function injectHighlightUI(searchBox) {
+        if (document.getElementById('statHighlighterSettingsBtn')) return;
+
+        const settingsButton = document.createElement('span');
+        settingsButton.id = 'statHighlighterSettingsBtn';
+        settingsButton.style.cssText = 'float: right; margin-left: 8px; margin-right: 5px; cursor: pointer; font-size: 24px; padding-top: 5px;';
+        settingsButton.title = 'ステータス合計ハイライト設定';
+        // ページにロードされているRemixiconの 'ri-settings-3-line' を使用
+        settingsButton.innerHTML = '<i class="ri-settings-3-line"></i>';
+        searchBox.parentNode.insertBefore(settingsButton, searchBox);
+
+        const modalHtml = `
+            <div id="statHighlighterModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 9998;">
+                <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background-color: #f0f0f0; color: #333; border: 1px solid #ccc; border-radius: 8px; padding: 20px; z-index: 9999; min-width: 450px; box-shadow: 0 4px 15px rgba(0,0,0,0.2);">
+                    <h3 style="margin-top: 0; border-bottom: 1px solid #ccc; padding-bottom: 10px;">ステータス合計ハイライト設定</h3>
+                    <p style="font-size: 9pt; margin-bottom: 15px;">閾値（合計ステータス）が高い順に優先されます。</p>
+                    <div id="settingsContainer"></div>
+                    <button id="saveHighlighterSettings" style="margin-top: 15px; padding: 8px 15px; cursor: pointer;">保存して適用</button>
+                    <button id="closeHighlighterModal" style="margin-top: 15px; margin-left: 10px; padding: 8px 15px; cursor: pointer;">閉じる</button>
+                </div>
+            </div>
+        `;
+        document.body.insertAdjacentHTML('beforeend', modalHtml);
+
+        settingsButton.addEventListener('click', openHighlightModal);
+        document.getElementById('closeHighlighterModal').addEventListener('click', closeHighlightModal);
+
+        document.getElementById('saveHighlighterSettings').addEventListener('click', () => {
+            const newSettings = [];
+            document.querySelectorAll('#settingsContainer .setting-row').forEach(row => {
+                newSettings.push({
+                    threshold: Number(row.querySelector('.setting-threshold').value) || 0,
+                    color: row.querySelector('.setting-color').value,
+                    enabled: row.querySelector('.setting-enabled').checked
+                });
+            });
+            saveHighlightSettings(newSettings);
+            applyHighlightColors();
+            closeHighlightModal();
+        });
+
+        document.getElementById('statHighlighterModal').addEventListener('click', function(e) {
+            if (e.target === this) {
+                closeHighlightModal();
+            }
+        });
+
+        searchBox.addEventListener('input', () => {
+            setTimeout(applyHighlightColors, 50);
+        });
+    }
+
+    // === メイン処理の開始 ===
+
+    // 1. 誘引・忌避・花壇ボタンなどの動的監視
+    const observer = new MutationObserver(() => {
+        let timeout;
+        clearTimeout(timeout);
+        timeout = setTimeout(processDOMChanges, 100);
+    });
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+
+    // 2. ページ読み込み完了時の処理
+    window.addEventListener('load', () => {
+        // 全体マップの折りたたみ初期化
+        initCollapsibleAreas();
+
+        // ハイライト機能の初期化 (mode=action のみ)
+        if (window.location.href.includes('mode=action')) {
+            setTimeout(() => {
+                const searchBox = document.getElementById('searchBox');
+                if (searchBox) {
+                    injectHighlightUI(searchBox);
+                    applyHighlightColors();
+                }
+            }, 500); // ページコンポーネントの読み込み待機
+        }
+    });
 
 })();
