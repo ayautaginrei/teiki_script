@@ -4,6 +4,13 @@
 - 自分用を一部公開しているだけなので不具合対応は基本的にしません
 - フィードバックは聞かなかったことにする可能性が高いです
 
+### [Better Stroll Green GFRe](https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/soraniwa/Better%20Stroll%20Green%20GFRe.user.js)
+あらゆるUIに手を加えてなんか良くなった感じに見せる拡張。
+- マップ移動欄に忌避と誘引の数値を表示（アイテム設定ページで取得する必要あり・一括移動非対応）
+- 連れ出しキャラクターリストのステータス合計を計算し、表示色を変える機能（閾値と色を設定可）
+- 花壇の管理をプルダウンからトグルボタンに
+- 全体マップの探索リストを自動的に折りたたむ
+
 ### [ニワGFRe マッピングヘルパー](https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/soraniwa/%E3%83%8B%E3%83%AFGFRe%20%E3%83%9E%E3%83%83%E3%83%94%E3%83%B3%E3%82%B0%E3%83%98%E3%83%AB%E3%83%91%E3%83%BC.user.js)
 特定の様式でマッピングするのを手助けする拡張。
 - 各種行動＞マップ移動から、メンバーを非表示の右隣にできたボタンをクリックしてコピー
