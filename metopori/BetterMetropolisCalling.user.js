@@ -4,6 +4,7 @@
 // @version      1.1
 // @description  見やすいUIに調整（半透明ボックス・枠・余白追加）＋スキル説明の自動表示
 // @match        https://metropolis-c-openbeta.sakuraweb.com/*
+// @update       https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/metopori/BetterMetropolisCalling.user.js
 // @grant        GM_addStyle
 // ==/UserScript==
 
@@ -153,3 +154,4 @@
     });
 
 })();
+
