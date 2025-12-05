@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         BetterMetropolisCalling
 // @namespace    http://tampermonkey.net/
-// @version      1.1
-// @description  見やすいUIに調整（半透明ボックス・枠・余白追加）＋スキル説明の自動表示
+// @version      1.2
+// @description  CSS追加、スキル説明の自動表示、ストーリーページの表示改善
 // @match        https://metropolis-c-openbeta.sakuraweb.com/*
 // @update       https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/metopori/BetterMetropolisCalling.user.js
 // @grant        GM_addStyle
@@ -11,9 +11,10 @@
 (function () {
     'use strict';
 
-    // ==========================================
-    //  1. CSSスタイル設定
-    // ==========================================
+// ==========================================
+//  CSSスタイル設定
+// ==========================================
+
     GM_addStyle(`
         /* --- 既存のスタイル設定 --- */
 
@@ -98,60 +99,173 @@
         }
     `);
 
-    // ==========================================
-    //  2. スキル説明自動表示機能
-    // ==========================================
-    window.addEventListener('load', function() {
-        const skillDatabase = {};
 
-        document.querySelectorAll('details ul li').forEach(li => {
-            const strongTag = li.querySelector('strong');
-            if (strongTag) {
-                const skillName = strongTag.textContent.trim();
+// ==========================================
+//  ページングコピー
+// ==========================================
 
-                let descText = li.textContent.replace(skillName, '').trim();
-                if (descText.startsWith('：')) {
-                    descText = descText.substring(1).trim();
-                }
+        function duplicatePagination() {
+            if (!location.pathname.includes("userlist") &&
+                !location.pathname.includes("characterlist") &&
+                !document.querySelector(".pagination")) return;
 
-                skillDatabase[skillName] = descText;
-            }
+            const linksArea = document.querySelector(".links");
+            const pagination = document.querySelector(".pagination");
+            if (!linksArea || !pagination) return;
+
+            const clone = pagination.cloneNode(true);
+            clone.style.marginBottom = "15px";
+            clone.style.marginTop = "10px";
+
+            linksArea.insertAdjacentElement("afterend", clone);
+        }
+        duplicatePagination();
+
+
+// ==========================================
+//  ストーリーページ改善
+// ==========================================
+
+        function enhanceScenarioSelect() {
+        const select = document.querySelector('select[name="scenario_key"]');
+        if (!select) return;
+
+        const options = Array.from(select.querySelectorAll("option"));
+
+        const mains = [];
+        const subs = [];
+
+        options.forEach(opt => {
+            const text = opt.textContent;
+            if (text.includes("メイン")) mains.push(opt);
+            else subs.push(opt);
         });
 
+        const latestMain = mains[mains.length - 1];
 
-        const skillSelects = document.querySelectorAll('select[name^="skill"]:not([name*="_icon"]):not([name*="_msg"]):not([name*="_cutin"])');
-
-        skillSelects.forEach(select => {
-            const descBox = document.createElement('div');
-            descBox.className = 'skill-desc-preview';
-            descBox.textContent = '---'; //
-
-            const parentLabel = select.closest('label');
-            if (parentLabel) {
-                parentLabel.insertAdjacentElement('afterend', descBox);
+        mains.forEach(opt => {
+            const t = opt.textContent.replace(/^★\s*/, "").trim();
+            if (opt === latestMain) {
+                opt.textContent = "★ " + t;
             } else {
-                select.insertAdjacentElement('afterend', descBox);
+                opt.textContent = t;
             }
-
-            const updateDescription = () => {
-                const selectedOption = select.options[select.selectedIndex];
-                const selectedText = selectedOption.textContent.trim();
-
-                if (skillDatabase[selectedText]) {
-                    descBox.textContent = skillDatabase[selectedText];
-                    descBox.style.display = 'block';
-                } else if (selectedOption.value === "") {
-                    descBox.textContent = "スキルを選択してください";
-                    descBox.style.display = 'none';
-                } else {
-                    descBox.textContent = "説明が見つかりません";
-                }
-            };
-            select.addEventListener('change', updateDescription);
-
-            updateDescription();
         });
-    });
+        subs.forEach(opt => {
+            opt.textContent = opt.textContent.replace(/^★\s*/, "").trim();
+        });
+
+        const mainGroup = document.createElement("optgroup");
+        mainGroup.label = "【メイン】";
+        mains.forEach(opt => mainGroup.appendChild(opt));
+
+        const subGroup = document.createElement("optgroup");
+        subGroup.label = "【サブ】";
+        subs.forEach(opt => subGroup.appendChild(opt));
+
+        select.innerHTML = "";
+        select.appendChild(mainGroup);
+        select.appendChild(subGroup);
+
+        if (latestMain) latestMain.selected = true;
+
+
+        const display = document.createElement("div");
+        display.style.margin = "8px 0 12px 0";
+        display.style.fontWeight = "bold";
+        select.insertAdjacentElement("afterend", display);
+
+        function updateMemberCount() {
+            const checked = document.querySelectorAll('input[name="members[]"]:checked').length;
+
+            const selfCount = 1;
+            const total = checked + selfCount;
+
+            const selectedTxt = select.options[select.selectedIndex].textContent;
+            const maxMatch = selectedTxt.match(/（(\d+)人まで）/);
+            const max = maxMatch ? Number(maxMatch[1]) : "?";
+
+            display.textContent = `出撃するキャラクター人数：${total} / ${max}`;
+        }
+
+        document.querySelectorAll('.user-card').forEach(card => {
+            const img = card.querySelector('img');
+            const cb = card.querySelector('input[type="checkbox"]');
+            if (img && cb) {
+                img.style.cursor = "pointer";
+                img.addEventListener("click", () => {
+                    cb.checked = !cb.checked;
+                    cb.dispatchEvent(new Event("change"));
+                });
+            }
+        });
+
+        document.querySelectorAll('input[name="members[]"]').forEach(cb => {
+            cb.addEventListener("change", updateMemberCount);
+        });
+
+        select.addEventListener("change", updateMemberCount);
+
+        updateMemberCount();
+        }
+        enhanceScenarioSelect();
+
+
+
+// ==========================================
+//  スキルプレビュー
+// ==========================================
+
+        window.addEventListener('load', function() {
+            const skillDatabase = {};
+
+            document.querySelectorAll('details ul li').forEach(li => {
+                const strongTag = li.querySelector('strong');
+                if (strongTag) {
+                    const skillName = strongTag.textContent.trim();
+
+                    let descText = li.textContent.replace(skillName, '').trim();
+                    if (descText.startsWith('：')) {
+                        descText = descText.substring(1).trim();
+                    }
+
+                    skillDatabase[skillName] = descText;
+                }
+            });
+
+            const skillSelects = document.querySelectorAll('select[name^="skill"]:not([name*="_icon"]):not([name*="_msg"]):not([name*="_cutin"])');
+
+            skillSelects.forEach(select => {
+                const descBox = document.createElement('div');
+                descBox.className = 'skill-desc-preview';
+                descBox.textContent = '---';
+
+                const parentLabel = select.closest('label');
+                if (parentLabel) {
+                    parentLabel.insertAdjacentElement('afterend', descBox);
+                } else {
+                    select.insertAdjacentElement('afterend', descBox);
+                }
+
+                const updateDescription = () => {
+                    const selectedOption = select.options[select.selectedIndex];
+                    const selectedText = selectedOption.textContent.trim();
+
+                    if (skillDatabase[selectedText]) {
+                        descBox.textContent = skillDatabase[selectedText];
+                        descBox.style.display = 'block';
+                    } else if (selectedOption.value === "") {
+                        descBox.textContent = "スキルを選択してください";
+                        descBox.style.display = 'none';
+                    } else {
+                        descBox.textContent = "説明が見つかりません";
+                    }
+                };
+                select.addEventListener('change', updateDescription);
+
+                updateDescription();
+            });
+        });
 
 })();
 
