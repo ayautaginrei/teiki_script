@@ -4,6 +4,13 @@
 - 自分用を一部公開しているだけなので不具合対応は基本的にしません
 - フィードバックは聞かなかったことにする可能性が高いです
 
+### [BetterMetropolisCalling](https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/metopori/BetterMetropolisCalling.user.js)
+あらゆるUIに手を加えてなんか良くなった感じに見せる拡張。
+- 全体的にCSSを追加
+- ストーリーページの表示を改善（出撃先選択プルダウンの改善、選択人数表示、アイコンをクリックしてもチェックできるように）
+- スキルページで選択したスキルのプレビューが表示されるように
+- キャラリストページでページャーをリスト上部にも表示
+
 ### [Better Stroll Green GFRe](https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/soraniwa/Better%20Stroll%20Green%20GFRe.user.js)
 あらゆるUIに手を加えてなんか良くなった感じに見せる拡張。
 - マップ移動欄に忌避と誘引の数値を表示（アイテム設定ページで取得する必要あり・一括移動非対応）
