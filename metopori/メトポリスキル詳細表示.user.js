@@ -3,6 +3,7 @@
 // @namespace    http://tampermonkey.net/
 // @version      1.0
 // @description  スキル名を探して詳細ツールチップを付与
+// @author       ayautaginrei(Gemini)
 // @match        https://metropolis-c-openbeta.sakuraweb.com/*
 // @update       https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/metopori/%E3%83%A1%E3%83%88%E3%83%9D%E3%83%AA%E3%82%B9%E3%82%AD%E3%83%AB%E8%A9%B3%E7%B4%B0%E8%A1%A8%E7%A4%BA.user.js
 // @grant        GM_xmlhttpRequest
