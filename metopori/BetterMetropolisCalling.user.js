@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BetterMetropolisCalling
 // @namespace    http://tampermonkey.net/
-// @version      1.2
+// @version      1.2.1
 // @description  CSS追加、スキル説明の自動表示、ストーリーページの表示改善
 // @match        https://metropolis-c-openbeta.sakuraweb.com/*
 // @update       https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/metopori/BetterMetropolisCalling.user.js
@@ -142,18 +142,6 @@
         });
 
         const latestMain = mains[mains.length - 1];
-
-        mains.forEach(opt => {
-            const t = opt.textContent.replace(/^★\s*/, "").trim();
-            if (opt === latestMain) {
-                opt.textContent = "★ " + t;
-            } else {
-                opt.textContent = t;
-            }
-        });
-        subs.forEach(opt => {
-            opt.textContent = opt.textContent.replace(/^★\s*/, "").trim();
-        });
 
         const mainGroup = document.createElement("optgroup");
         mainGroup.label = "【メイン】";
