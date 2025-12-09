@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BetterMetropolisCalling
 // @namespace    http://tampermonkey.net/
-// @version      1.2.1
+// @version      1.2.2
 // @description  CSS追加、スキル説明の自動表示、ストーリーページの表示改善
 // @match        https://metropolis-c-openbeta.sakuraweb.com/*
 // @update       https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/metopori/BetterMetropolisCalling.user.js
@@ -11,18 +11,26 @@
 (function () {
     'use strict';
 
-// ==========================================
-//  CSSスタイル設定
-// ==========================================
+    // =====================================================================================
+    //  CSS
+    // =====================================================================================
 
-    GM_addStyle(`
+    const isRoomPage = location.pathname.startsWith("/room");
+
+    const ROOM_ONLY_CSS = `
+        body {
+            background-attachment: fixed !important;
+        }
+    `;
+
+    const FULL_CSS = `
         /* --- 既存のスタイル設定 --- */
 
         /* ページ全体の読みやすさ向上 */
         body {
             backdrop-filter: blur(3px);
             padding: 40px;
-            background-attachment: fixed
+            background-attachment: fixed;
         }
 
         /* 上部リンクバーの背景 */
@@ -97,36 +105,36 @@
             line-height: 1.4;
             max-width: 600px;
         }
-    `);
+    `;
 
+    GM_addStyle(isRoomPage ? ROOM_ONLY_CSS : FULL_CSS);
 
-// ==========================================
-//  ページングコピー
-// ==========================================
+    // =====================================================================================
+    //  ページングコピー
+    // =====================================================================================
 
-        function duplicatePagination() {
-            if (!location.pathname.includes("userlist") &&
-                !location.pathname.includes("characterlist") &&
-                !document.querySelector(".pagination")) return;
+    function duplicatePagination() {
+        if (!location.pathname.includes("userlist") &&
+            !location.pathname.includes("characterlist") &&
+            !document.querySelector(".pagination")) return;
 
-            const linksArea = document.querySelector(".links");
-            const pagination = document.querySelector(".pagination");
-            if (!linksArea || !pagination) return;
+        const linksArea = document.querySelector(".links");
+        const pagination = document.querySelector(".pagination");
+        if (!linksArea || !pagination) return;
 
-            const clone = pagination.cloneNode(true);
-            clone.style.marginBottom = "15px";
-            clone.style.marginTop = "10px";
+        const clone = pagination.cloneNode(true);
+        clone.style.marginBottom = "15px";
+        clone.style.marginTop = "10px";
 
-            linksArea.insertAdjacentElement("afterend", clone);
-        }
-        duplicatePagination();
+        linksArea.insertAdjacentElement("afterend", clone);
+    }
+    duplicatePagination();
 
+    // =====================================================================================
+    //  ストーリーページ改善
+    // =====================================================================================
 
-// ==========================================
-//  ストーリーページ改善
-// ==========================================
-
-        function enhanceScenarioSelect() {
+    function enhanceScenarioSelect() {
         const select = document.querySelector('select[name="scenario_key"]');
         if (!select) return;
 
@@ -156,7 +164,6 @@
         select.appendChild(subGroup);
 
         if (latestMain) latestMain.selected = true;
-
 
         const display = document.createElement("div");
         display.style.margin = "8px 0 12px 0";
@@ -195,65 +202,64 @@
         select.addEventListener("change", updateMemberCount);
 
         updateMemberCount();
-        }
-        enhanceScenarioSelect();
+    }
+    enhanceScenarioSelect();
 
+    // =====================================================================================
+    //  スキルプレビュー
+    // =====================================================================================
 
+    window.addEventListener('load', function() {
+        const skillDatabase = {};
 
-// ==========================================
-//  スキルプレビュー
-// ==========================================
+        document.querySelectorAll('details ul li').forEach(li => {
+            const strongTag = li.querySelector('strong');
+            if (strongTag) {
+                const skillName = strongTag.textContent.trim();
 
-        window.addEventListener('load', function() {
-            const skillDatabase = {};
-
-            document.querySelectorAll('details ul li').forEach(li => {
-                const strongTag = li.querySelector('strong');
-                if (strongTag) {
-                    const skillName = strongTag.textContent.trim();
-
-                    let descText = li.textContent.replace(skillName, '').trim();
-                    if (descText.startsWith('：')) {
-                        descText = descText.substring(1).trim();
-                    }
-
-                    skillDatabase[skillName] = descText;
-                }
-            });
-
-            const skillSelects = document.querySelectorAll('select[name^="skill"]:not([name*="_icon"]):not([name*="_msg"]):not([name*="_cutin"])');
-
-            skillSelects.forEach(select => {
-                const descBox = document.createElement('div');
-                descBox.className = 'skill-desc-preview';
-                descBox.textContent = '---';
-
-                const parentLabel = select.closest('label');
-                if (parentLabel) {
-                    parentLabel.insertAdjacentElement('afterend', descBox);
-                } else {
-                    select.insertAdjacentElement('afterend', descBox);
+                let descText = li.textContent.replace(skillName, '').trim();
+                if (descText.startsWith('：')) {
+                    descText = descText.substring(1).trim();
                 }
 
-                const updateDescription = () => {
-                    const selectedOption = select.options[select.selectedIndex];
-                    const selectedText = selectedOption.textContent.trim();
-
-                    if (skillDatabase[selectedText]) {
-                        descBox.textContent = skillDatabase[selectedText];
-                        descBox.style.display = 'block';
-                    } else if (selectedOption.value === "") {
-                        descBox.textContent = "スキルを選択してください";
-                        descBox.style.display = 'none';
-                    } else {
-                        descBox.textContent = "説明が見つかりません";
-                    }
-                };
-                select.addEventListener('change', updateDescription);
-
-                updateDescription();
-            });
+                skillDatabase[skillName] = descText;
+            }
         });
 
-})();
+        const skillSelects = document.querySelectorAll(
+            'select[name^="skill"]:not([name*="_icon"]):not([name*="_msg"]):not([name*="_cutin"])'
+        );
 
+        skillSelects.forEach(select => {
+            const descBox = document.createElement('div');
+            descBox.className = 'skill-desc-preview';
+            descBox.textContent = '---';
+
+            const parentLabel = select.closest('label');
+            if (parentLabel) {
+                parentLabel.insertAdjacentElement('afterend', descBox);
+            } else {
+                select.insertAdjacentElement('afterend', descBox);
+            }
+
+            const updateDescription = () => {
+                const selectedOption = select.options[select.selectedIndex];
+                const selectedText = selectedOption.textContent.trim();
+
+                if (skillDatabase[selectedText]) {
+                    descBox.textContent = skillDatabase[selectedText];
+                    descBox.style.display = 'block';
+                } else if (selectedOption.value === "") {
+                    descBox.textContent = "スキルを選択してください";
+                    descBox.style.display = 'none';
+                } else {
+                    descBox.textContent = "説明が見つかりません";
+                }
+            };
+            select.addEventListener('change', updateDescription);
+
+            updateDescription();
+        });
+    });
+
+})();
