@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         BetterMetropolisCalling
 // @namespace    http://tampermonkey.net/
-// @version      1.2.2
-// @description  CSS追加、スキル説明の自動表示、ストーリーページの表示改善
+// @version      1.3
+// @description  CSS追加、ストーリーページの表示改善、削除済み投稿の非表示
 // @match        https://metropolis-c-openbeta.sakuraweb.com/*
 // @update       https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/metopori/BetterMetropolisCalling.user.js
 // @grant        GM_addStyle
@@ -15,7 +15,7 @@
     //  CSS
     // =====================================================================================
 
-    const isRoomPage = location.pathname.startsWith("/room");
+    const isSimpleStylePage = location.pathname.startsWith("/room") || location.pathname.includes("bbs.php");
 
     const ROOM_ONLY_CSS = `
         body {
@@ -35,7 +35,7 @@
 
         /* 上部リンクバーの背景 */
         .links {
-            background: rgba(0,0,0,0.2);
+            background: rgba(0,0,0,0.3);
             padding: 10px 15px;
             border-radius: 6px;
             display: inline-block;
@@ -90,24 +90,30 @@
             padding: 4px;
             border-radius: 4px;
         }
-
-        /* --- 新規追加: スキル説明表示用のスタイル --- */
-        .skill-desc-preview {
-            display: block;
-            margin-top: 5px;
-            margin-bottom: 10px;
-            padding: 8px 12px;
-            background-color: rgba(0, 0, 0, 0.05);
-            border-left: 4px solid #4a90e2;
-            border-radius: 4px;
-            font-size: 0.9em;
-            color: #333;
-            line-height: 1.4;
-            max-width: 600px;
-        }
     `;
 
-    GM_addStyle(isRoomPage ? ROOM_ONLY_CSS : FULL_CSS);
+    // ルームまたはBBSなら簡易CSS、それ以外はフルCSSを適用
+    GM_addStyle(isSimpleStylePage ? ROOM_ONLY_CSS : FULL_CSS);
+
+    // =====================================================================================
+    //  削除済み投稿の非表示 (ルーム & BBS)
+    // =====================================================================================
+
+    function hideDeletedPosts() {
+        if (!isSimpleStylePage) return;
+
+        const posts = document.querySelectorAll('.post');
+
+        posts.forEach(post => {
+            const strongTag = post.querySelector('.post-content-area strong');
+
+            // "削除済み投稿" という文字列が含まれていれば非表示にする
+            if (strongTag && strongTag.textContent.trim() === '削除済み投稿') {
+                post.style.display = 'none';
+            }
+        });
+    }
+    hideDeletedPosts();
 
     // =====================================================================================
     //  ページングコピー
@@ -204,62 +210,5 @@
         updateMemberCount();
     }
     enhanceScenarioSelect();
-
-    // =====================================================================================
-    //  スキルプレビュー
-    // =====================================================================================
-
-    window.addEventListener('load', function() {
-        const skillDatabase = {};
-
-        document.querySelectorAll('details ul li').forEach(li => {
-            const strongTag = li.querySelector('strong');
-            if (strongTag) {
-                const skillName = strongTag.textContent.trim();
-
-                let descText = li.textContent.replace(skillName, '').trim();
-                if (descText.startsWith('：')) {
-                    descText = descText.substring(1).trim();
-                }
-
-                skillDatabase[skillName] = descText;
-            }
-        });
-
-        const skillSelects = document.querySelectorAll(
-            'select[name^="skill"]:not([name*="_icon"]):not([name*="_msg"]):not([name*="_cutin"])'
-        );
-
-        skillSelects.forEach(select => {
-            const descBox = document.createElement('div');
-            descBox.className = 'skill-desc-preview';
-            descBox.textContent = '---';
-
-            const parentLabel = select.closest('label');
-            if (parentLabel) {
-                parentLabel.insertAdjacentElement('afterend', descBox);
-            } else {
-                select.insertAdjacentElement('afterend', descBox);
-            }
-
-            const updateDescription = () => {
-                const selectedOption = select.options[select.selectedIndex];
-                const selectedText = selectedOption.textContent.trim();
-
-                if (skillDatabase[selectedText]) {
-                    descBox.textContent = skillDatabase[selectedText];
-                    descBox.style.display = 'block';
-                } else if (selectedOption.value === "") {
-                    descBox.textContent = "スキルを選択してください";
-                    descBox.style.display = 'none';
-                } else {
-                    descBox.textContent = "説明が見つかりません";
-                }
-            };
-            select.addEventListener('change', updateDescription);
-
-            updateDescription();
-        });
-    });
 
 })();
