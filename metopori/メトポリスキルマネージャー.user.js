@@ -5,7 +5,7 @@
 // @description  スキル構成の保存と読み込み、スキル説明表示、スロットをドラッグ＆ドロップで並べ替え
 // @author       ayautaginrei(Gemini)
 // @match        https://metropolis-c-openbeta.sakuraweb.com/status*
-// @update
+// @update       https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/metopori/%E3%83%A1%E3%83%88%E3%83%9D%E3%83%AA%E3%82%B9%E3%82%AD%E3%83%AB%E3%83%9E%E3%83%8D%E3%83%BC%E3%82%B8%E3%83%A3%E3%83%BC.user.js
 // @grant        none
 // ==/UserScript==
 
