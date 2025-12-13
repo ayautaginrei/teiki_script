@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BetterMetropolisCalling
 // @namespace    http://tampermonkey.net/
-// @version      1.3
+// @version      1.3.1
 // @description  CSS追加、ストーリーページの表示改善、削除済み投稿の非表示
 // @match        https://metropolis-c-openbeta.sakuraweb.com/*
 // @update       https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/metopori/BetterMetropolisCalling.user.js
@@ -148,15 +148,29 @@
 
         const mains = [];
         const subs = [];
+        const extras = [];
+        const epilogues = [];
 
         options.forEach(opt => {
             const text = opt.textContent;
-            if (text.includes("メイン")) mains.push(opt);
-            else subs.push(opt);
+            if (text.includes("エクストラ")) {
+                extras.push(opt);
+            } else if (text.includes("エピローグ")) {
+                epilogues.push(opt);
+            } else if (text.includes("メイン")) {
+                mains.push(opt);
+            } else if (text.includes("サブ")) {
+                subs.push(opt);
+            }
         });
 
-        const latestMain = mains[mains.length - 1];
+        // メインシナリオのクリア状況をチェック (エピローグ以外)
+        const allMainCleared = mains.length > 0 && mains.every(opt => opt.textContent.includes("★"));
 
+        // メインシナリオリストの最後にエピローグを追加
+        mains.push(...epilogues);
+
+        // カテゴリグループの作成
         const mainGroup = document.createElement("optgroup");
         mainGroup.label = "【メイン】";
         mains.forEach(opt => mainGroup.appendChild(opt));
@@ -165,11 +179,36 @@
         subGroup.label = "【サブ】";
         subs.forEach(opt => subGroup.appendChild(opt));
 
+        const extraGroup = document.createElement("optgroup");
+        extraGroup.label = "【エクストラ】";
+        extras.forEach(opt => extraGroup.appendChild(opt));
+
         select.innerHTML = "";
+
+        // 1. エクストラがあれば追加
+        if (extras.length > 0) {
+            select.appendChild(extraGroup);
+        }
+
+        // 2. メインを追加
         select.appendChild(mainGroup);
+
+        // 3. サブを追加
         select.appendChild(subGroup);
 
-        if (latestMain) latestMain.selected = true;
+        // 初期選択の設定
+        let initialSelection = mains[mains.length - 1]; // デフォルトは最新のメインシナリオ
+
+        if (allMainCleared && extras.length > 0) {
+            initialSelection = extras[0];
+        } else if (epilogues.length > 0 && mains.length > 0) {
+
+        }
+
+        if (initialSelection) {
+            initialSelection.selected = true;
+        }
+
 
         const display = document.createElement("div");
         display.style.margin = "8px 0 12px 0";
