@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         メトポリスキルマネージャー
 // @namespace    http://tampermonkey.net/
-// @version      1.0
-// @description  スキル構成の保存と読み込み、スキル説明表示、スロットをドラッグ＆ドロップで並べ替え
+// @version      1.1
+// @description  スキル構成の保存・読込・ファイル入出力、スロットのドラッグ＆ドロップ並べ替え
 // @author       ayautaginrei(Gemini)
 // @match        https://metropolis-c-openbeta.sakuraweb.com/status*
 // @update       https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/metopori/%E3%83%A1%E3%83%88%E3%83%9D%E3%83%AA%E3%82%B9%E3%82%AD%E3%83%AB%E3%83%9E%E3%83%8D%E3%83%BC%E3%82%B8%E3%83%A3%E3%83%BC.user.js
@@ -26,7 +26,6 @@
     function injectStyles() {
         const style = document.createElement('style');
         style.textContent = `
-
             .skill-desc-preview {
                 display: block;
                 margin-top: 5px;
@@ -40,7 +39,6 @@
                 line-height: 1.4;
                 max-width: 600px;
             }
-
             .drag-handle {
                 cursor: grab;
                 margin-right: 10px;
@@ -50,12 +48,45 @@
             .drag-handle:active {
                 cursor: grabbing;
             }
+            /* ボタン共通スタイル */
+            .msm-btn {
+                cursor: pointer;
+                padding: 5px 12px;
+                color: white;
+                border: none;
+                border-radius: 3px;
+                font-weight: bold;
+                font-size: 0.9em;
+                margin-left: 5px;
+                white-space: nowrap;
+            }
+            .msm-btn-save { background: #22c502; }
+            .msm-btn-load { background: #2196F3; }
+            .msm-btn-del { background: #d4190cff; }
+            .msm-btn-edit { background: #2196F3; }
+            .msm-btn-file { background: #607D8B; }
+            .msm-btn-submit { background: #22c502; }
+
+            .msm-row {
+                display: flex;
+                gap: 10px;
+                align-items: center;
+                padding: 8px;
+                border-radius: 4px;
+                margin-bottom: 5px;
+            }
+            .msm-label {
+                font-weight: bold;
+                font-size: 0.9em;
+                min-width: 80px;
+                color: #333;
+            }
         `;
         document.head.appendChild(style);
     }
 
     // =============================================================================
-    //  1. スキルセットマネージャー (保存・読込パネル)
+    //  1. スキルセットマネージャー (保存・読込・ファイル管理パネル)
     // =============================================================================
 
     function createControlPanel() {
@@ -75,39 +106,63 @@
             margin-bottom: 20px;
             border-radius: 8px;
             box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-            color: #333; /* サイトCSSがない場合のための文字色指定 */
+            color: #333;
         `;
 
         container.innerHTML = `
             <div style="font-weight:bold; margin-bottom:10px; font-size:1.1em; border-bottom:1px solid #ccc; padding-bottom:5px;">
                 ▼ スキルセット管理マネージャー
             </div>
-            <div style="display:flex; flex-direction:column; gap:10px;">
-                <div style="display:flex; gap:10px; align-items:center; background:#eef; padding:8px; border-radius:4px;">
-                    <span style="font-weight:bold; font-size:0.9em; min-width:80px; color:#333;">新規保存:</span>
-                    <input type="text" id="script-set-name" placeholder="セット名を入力 (例: ボス戦用)" style="padding:5px; border:1px solid #ccc; border-radius:3px; flex:1;">
-                    <button id="script-save-btn" type="button" style="cursor:pointer; padding:5px 15px; background:#4CAF50; color:white; border:none; border-radius:3px; font-weight:bold;">保存</button>
+            <div style="display:flex; flex-direction:column; gap:5px;">
+                <div class="msm-row" style="background:#eef;">
+                    <span class="msm-label">新規セット作成 : </span>
+                    <input type="text" id="script-set-name" placeholder="セット名を入力し、現在の構成を保存" style="padding:5px; border:1px solid #ccc; border-radius:3px; flex:1;">
+                    <button id="script-save-btn" type="button" class="msm-btn msm-btn-save">作成</button>
                 </div>
-                <div style="display:flex; gap:10px; align-items:center; background:#fee; padding:8px; border-radius:4px;">
-                    <span style="font-weight:bold; font-size:0.9em; min-width:80px; color:#333;">読込・削除:</span>
+
+                <div class="msm-row" style="background:#fee;">
+                    <span class="msm-label">読込・操作 : </span>
                     <select id="script-set-select" style="padding:5px; border:1px solid #ccc; border-radius:3px; flex:1;">
                         <option value="">保存データなし</option>
                     </select>
-                    <button id="script-load-btn" type="button" style="cursor:pointer; padding:5px 15px; background:#2196F3; color:white; border:none; border-radius:3px; font-weight:bold;">読込</button>
-                    <button id="script-delete-btn" type="button" style="cursor:pointer; padding:5px 15px; background:#f44336; color:white; border:none; border-radius:3px; font-weight:bold;">削除</button>
+                    <button id="script-load-btn" type="button" class="msm-btn msm-btn-load" title="選択したセットを反映">読込</button>
+                    <button id="script-rename-btn" type="button" class="msm-btn msm-btn-edit" title="名前変更">名前変更</button>
+                    <button id="script-delete-btn" type="button" class="msm-btn msm-btn-del" title="削除">削除</button>
                 </div>
-            </div>
-            <div style="margin-top:5px; font-size:0.8em; color:#666;">
-                ※ステータス（STR等）は保存されません。スキル構成のみ保存されます。<br>
-                ※読込後、ページ下部の<strong>「スキル設定を保存」</strong>ボタンを押して確定してください。
+
+                <div class="msm-row" style="background:#ddd; margin-top: 5px; border-top: 1px solid #ddd; padding-top: 10px;">
+                    <div style="display:flex; align-items:center;"></div>
+                        <input type="file" id="script-file-import" accept=".json" style="display:none;">
+                        <span class="msm-label">バックアップの保存と復元 : </span>
+                        <button id="script-export-btn" type="button" class="msm-btn msm-btn-file" style="margin-left:0; margin-right:5px;">エクスポート</button>
+                        <button id="script-import-btn" type="button" class="msm-btn msm-btn-file" style="margin-left:0;">インポート</button>
+
+                    <div style="flex:1;"></div>
+
+                    <div>
+                        <button id="script-submit-real-btn" type="button" class="msm-btn msm-btn-submit" style="min-width:160px;">スキル設定を反映</button>
+                    </div>
+                </div>
             </div>
         `;
 
         targetHeader.insertAdjacentElement('afterend', container);
 
+        // Event Listeners
         document.getElementById('script-save-btn').addEventListener('click', saveCurrentSet);
         document.getElementById('script-load-btn').addEventListener('click', loadSelectedSet);
+        document.getElementById('script-rename-btn').addEventListener('click', renameSelectedSet);
         document.getElementById('script-delete-btn').addEventListener('click', deleteSelectedSet);
+
+        // File I/O Listeners
+        document.getElementById('script-export-btn').addEventListener('click', exportDataToFile);
+        const importInput = document.getElementById('script-file-import');
+        const importBtn = document.getElementById('script-import-btn');
+        importBtn.addEventListener('click', () => importInput.click()); // ボタンクリックでinput発火
+        importInput.addEventListener('change', importDataFromFile);
+
+        // Submit Listener
+        document.getElementById('script-submit-real-btn').addEventListener('click', submitRealForm);
 
         updateSelectOptions();
         console.log('[SkillManager] Control panel created and positioned.');
@@ -118,7 +173,7 @@
         const select = document.getElementById('script-set-select');
         const currentVal = select.value;
 
-        select.innerHTML = '<option value="">セットを選択してください...</option>';
+        select.innerHTML = '<option value="">---</option>';
         const keys = Object.keys(data);
 
         if (keys.length === 0) {
@@ -138,7 +193,7 @@
         }
     }
 
-    // --- イベントハンドラ (保存/読込/削除) ---
+    // --- イベントハンドラ (保存/読込/削除/名前変更) ---
 
     function saveCurrentSet(e) {
         e.preventDefault();
@@ -206,10 +261,36 @@
 
         let resultMsg = `セット「${setName}」を読み込みました。`;
         if (missingSkills.length > 0) {
-            resultMsg += `\n\n【警告】以下のスキルは習得条件を満たしていない等の理由でセットできませんでした：\n${missingSkills.join('\n')}`;
+            resultMsg += `\n\n【エラー】以下のスキルは習得条件を満たしていない等の理由でセットできませんでした：\n${missingSkills.join('\n')}`;
         }
-        resultMsg += `\n\n反映するにはページ下部の「スキル設定を保存」ボタンを押してください。`;
         alert(resultMsg);
+    }
+
+    function renameSelectedSet(e) {
+        e.preventDefault();
+        const select = document.getElementById('script-set-select');
+        const oldName = select.value;
+        if (!oldName) {
+            alert("変更するセットを選択してください。");
+            return;
+        }
+
+        const newName = prompt("新しいセット名を入力してください:", oldName);
+        if (newName && newName.trim() !== "" && newName !== oldName) {
+            const storageData = getSavedData();
+            if (storageData[newName] && !confirm(`「${newName}」は既に存在します。上書きしますか？`)) {
+                return;
+            }
+
+            // データ移行
+            storageData[newName] = storageData[oldName];
+            delete storageData[oldName];
+
+            saveToStorage(storageData);
+            updateSelectOptions();
+            select.value = newName; // 新しい名前を選択状態に
+            alert(`「${oldName}」を「${newName}」に変更しました。`);
+        }
     }
 
     function deleteSelectedSet(e) {
@@ -226,6 +307,68 @@
             document.getElementById('script-set-name').value = '';
             alert('削除しました。');
         }
+    }
+
+    function submitRealForm(e) {
+        e.preventDefault();
+        const originalSubmitBtn = document.querySelector('input[name="update_skills"]');
+        if (originalSubmitBtn) {
+            originalSubmitBtn.click();
+        } else {
+            alert('ページ内に「スキル設定を保存」ボタンが見つかりません。');
+        }
+    }
+
+    // --- ファイル入出力機能 ---
+
+    function exportDataToFile() {
+        const data = getSavedData();
+        if (Object.keys(data).length === 0) {
+            alert("保存されているデータがありません。");
+            return;
+        }
+
+        const fileName = "metropolis_skills.json";
+        const jsonStr = JSON.stringify(data, null, 2);
+        const blob = new Blob([jsonStr], {type: "application/json"});
+
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = fileName;
+        link.click();
+        URL.revokeObjectURL(link.href);
+    }
+
+    function importDataFromFile(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = function(event) {
+            try {
+                const importedData = JSON.parse(event.target.result);
+                if (typeof importedData !== 'object' || importedData === null) {
+                    throw new Error("Invalid format");
+                }
+
+                // 現在のデータと統合するか確認
+                if (confirm("ファイルを読み込みますか？\n（同名のセットがある場合は上書きされます）")) {
+                    const currentData = getSavedData();
+                    // マージ処理
+                    const newData = { ...currentData, ...importedData };
+                    saveToStorage(newData);
+                    updateSelectOptions();
+                    alert("読み込みが完了しました。");
+                }
+            } catch (err) {
+                console.error(err);
+                alert("ファイルの読み込みに失敗しました。\n正しいJSONファイルか確認してください。");
+            } finally {
+                // inputをリセットして同じファイルを再度選択できるようにする
+                e.target.value = '';
+            }
+        };
+        reader.readAsText(file);
     }
 
     // =============================================================================
@@ -273,7 +416,7 @@
                     descBox.textContent = "スキルを選択してください";
                     descBox.style.display = 'none';
                 } else {
-                    descBox.textContent = "説明が見つかりません";
+                    descBox.textContent = "説明が見つかりませんでした";
                 }
             };
             select.addEventListener('change', updateDescription);
@@ -299,7 +442,6 @@
 
         const container = skillFieldsets[0].parentElement;
 
-        // ▼ 内部ID再割り当て・各種書き換え処理
         const renumberSlots = () => {
             const currentFieldsets = Array.from(container.querySelectorAll("fieldset"))
                 .filter(f => f.querySelector("legend")?.textContent.includes("スキルスロット"));
@@ -350,7 +492,6 @@
                 fs.draggable = false;
                 fs.style.transition = "transform 0.2s, opacity 0.2s";
 
-                // ハンドルを掴んだ時だけドラッグ可能にする
                 handle.addEventListener("mousedown", () => {
                     fs.draggable = true;
                 });
@@ -368,7 +509,7 @@
 
             fs.addEventListener("dragend", () => {
                 fs.style.opacity = "1";
-                fs.draggable = false; // Reset
+                fs.draggable = false;
             });
 
             fs.addEventListener("dragover", e => {
@@ -404,7 +545,7 @@
     }
 
     // =============================================================================
-    //  6. 初期化
+    //   初期化
     // =============================================================================
 
     window.addEventListener('load', function() {
