@@ -1,16 +1,24 @@
 // ==UserScript==
 // @name         Stroll Green GFRe アイテム設定フロートメニュー
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.0.1
 // @description  アイテム設定ページのサブメニューをフロート化
 // @author       ayautaginrei
 // @match        https://soraniwa.428.st/gf/*
-// @updateURL    https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/soraniwa/Stroll%20Green%20GFRe%20%E3%82%A2%E3%82%A4%E3%83%86%E3%83%A0%E8%A8%AD%E5%AE%9A%E3%83%95%E3%83%AD%E3%83%BC%E3%83%88%E3%83%A1%E3%83%8B%E3%83%A5%E3%83%BC.user.js
+// @updateURL　  https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/soraniwa/Stroll%20Green%20GFRe%20%E3%82%A2%E3%82%A4%E3%83%86%E3%83%A0%E8%A8%AD%E5%AE%9A%E3%83%95%E3%83%AD%E3%83%BC%E3%83%88%E3%83%A1%E3%83%8B%E3%83%A5%E3%83%BC.user.js
 // @grant        none
 // ==/UserScript==
 
 (function() {
     'use strict';
+
+    const isItemSettingPage = Array.from(
+        document.querySelectorAll('h2.subtitle')
+    ).some(h => h.textContent.trim() === 'アイテム設定');
+
+    if (!isItemSettingPage) {
+        return;
+    }
 
     const style = document.createElement('style');
     style.textContent = `
