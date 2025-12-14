@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Better Stroll Green GFRe
 // @namespace    http://tampermonkey.net/
-// @version      1.2
+// @version      1.3
 // @description  Stroll GreenのUIを改善します。
 // @author       ayautaginrei(Gemini)
 // @match        https://soraniwa.428.st/gf/*
@@ -12,6 +12,83 @@
 
 (function() {
     'useSTRICT';
+
+    // === 公式一括選択のUX改善 ===
+
+    // 一括選択モードかどうかのフラグ
+    let isBulkSelectionMode = false;
+
+    const originalConfirm = window.confirm;
+    window.confirm = function(message) {
+        if (message === "グループ化されたすべてのアイテムを選択しますか？") {
+            if (isBulkSelectionMode) {
+                const toast = document.createElement('div');
+                toast.textContent = "グループを一括選択しました";
+                toast.style.cssText = "position: fixed; bottom: 80px; right: 20px; background: rgba(0,0,0,0.7); color: #fff; padding: 8px 16px; border-radius: 4px; z-index: 99999; pointer-events: none; transition: opacity 0.5s; font-size: 12px;";
+                document.body.appendChild(toast);
+
+                setTimeout(() => {
+                    toast.style.opacity = '0';
+                    setTimeout(() => toast.remove(), 500);
+                }, 2000);
+
+
+                isBulkSelectionMode = false;
+                return true;
+            } else {
+
+                return false;
+            }
+        }
+        return originalConfirm(message);
+    };
+
+
+    const style = document.createElement('style');
+    style.textContent = `
+
+        /* チェックボックスをクリック可能にし、カーソルを指にする */
+        .itemcheck {
+            pointer-events: auto !important;
+            cursor: pointer !important;
+        }
+        .itemcheck:hover {
+            opacity: 0.7;
+        }
+    `;
+    document.head.appendChild(style);
+
+    // === クリックイベントの制御 ===
+    document.addEventListener('click', function(e) {
+
+        const checkbox = e.target.closest('.itemcheck');
+        if (checkbox) {
+
+            e.preventDefault();
+            e.stopPropagation();
+
+            isBulkSelectionMode = true;
+
+            const container = checkbox.closest('td') || checkbox.parentElement;
+            const img = container ? container.querySelector('img.itemselect') : null;
+
+            if (img) {
+                img.click();
+            } else {
+                console.warn('Better Stroll Green: 対応する画像が見つかりませんでした');
+            }
+            return;
+        }
+
+        // 2. アイコン画像（.itemselect）がクリックされた場合
+        if (e.target.matches('img.itemselect')) {
+            if (e.isTrusted) {
+                isBulkSelectionMode = false;
+            } else {
+
+            }
+        }
+    }, true);
 
     // === 共通ストレージキー ===
     const STORAGE_KEYS = {
@@ -141,74 +218,6 @@
         document.querySelectorAll('.mapdesc').forEach(updateDisplay);
     }
 
-    // === 同名アイテム一括選択機能 ===
-    let isBatchMode = false;
-    let isBatchProcessing = false;
-
-    function getItemName($card) {
-        const rawText = $card.find('summary').text();
-        let name = rawText.split(' ×')[0];
-        if (rawText.indexOf('(提示中') !== -1) {
-            name = name.split(' (提示中')[0];
-        }
-        return name.trim();
-    }
-
-    function initBatchSelector() {
-        // jQueryが利用可能かつアイテム設定画面のターゲットが存在する場合のみ実行
-        if (typeof jQuery === 'undefined' || !document.getElementById('switchgroupby')) return;
-        const $ = jQuery;
-
-        // ボタンが既に存在する場合は終了
-        if ($('#batchSelectMode').length) return;
-
-        const $targetArea = $("#switchgroupby").parent();
-        const $batchButton = $('<span class="queryButton" id="batchSelectMode" data-ctip="ONにすると、アイテム選択時に同じ名前のアイテムをまとめて選択・解除します。">同名一括選択</span>');
-
-        $("#switchgroupby").before($batchButton);
-        $("#switchgroupby").before(" ");
-
-        $batchButton.click(function(){
-            isBatchMode = !isBatchMode;
-            if(isBatchMode){
-                $(this).addClass("queryButtonSelect");
-            } else {
-                $(this).removeClass("queryButtonSelect");
-            }
-        });
-
-        // クリックイベントの監視（二重登録防止）
-        if (!document.body.dataset.batchListenerAttached) {
-            document.body.dataset.batchListenerAttached = 'true';
-            $(document).on('click', '.itemselect', function(e) {
-                if (!isBatchMode || isBatchProcessing) return;
-
-                isBatchProcessing = true;
-                const $clickedImg = $(this);
-                const $clickedCard = $clickedImg.closest('.itemcard');
-
-                setTimeout(function() {
-                    const isSelected = $clickedCard.hasClass('itemselects');
-                    const targetName = getItemName($clickedCard);
-
-                    $('.itemcard').each(function() {
-                        const $currentCard = $(this);
-                        if ($currentCard.is($clickedCard)) return;
-
-                        const currentName = getItemName($currentCard);
-                        if (currentName === targetName) {
-                            const currentIsSelected = $currentCard.hasClass('itemselects');
-                            if (isSelected !== currentIsSelected) {
-                                $currentCard.find('.itemselect').click();
-                            }
-                        }
-                    });
-                    isBatchProcessing = false;
-                }, 10);
-            });
-        }
-    }
-
     // === DOM変更処理統合 ===
 
     function processDOMChanges() {
@@ -222,17 +231,13 @@
                     localStorage.setItem(STORAGE_KEYS.KIHI, kihi.toString());
                 }, 500);
             }
-            // 一括選択機能の初期化
-            initBatchSelector();
         }
 
         document.querySelectorAll('select[name^="kadanact"]:not([data-buttons-added])').forEach(convertSelectToButtons);
         document.querySelectorAll('.mapdesc').forEach(updateDisplay);
 
         document.querySelectorAll('.queryButton:not([data-listener-added])').forEach(button => {
-            // 新規追加したバッチボタンには干渉しないようにIDチェック
             if (button.id === 'batchSelectMode') return;
-
             button.dataset.listenerAdded = 'true';
             button.addEventListener('click', handleQueryButtonClick);
         });
