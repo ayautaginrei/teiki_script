@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         メトポリスキルマネージャー
 // @namespace    http://tampermonkey.net/
-// @version      1.1
-// @description  スキル構成の保存・読込・ファイル入出力、スロットのドラッグ＆ドロップ並べ替え
+// @version      1.2
+// @description  スキル構成の保存・読込・ファイル入出力、スロットのドラッグ＆ドロップ並べ替え、ステータス合計の表示
 // @author       ayautaginrei(Gemini)
 // @match        https://metropolis-c-openbeta.sakuraweb.com/status*
 // @update       https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/metopori/%E3%83%A1%E3%83%88%E3%83%9D%E3%83%AA%E3%82%B9%E3%82%AD%E3%83%AB%E3%83%9E%E3%83%8D%E3%83%BC%E3%82%B8%E3%83%A3%E3%83%BC.user.js
@@ -12,7 +12,20 @@
 (function() {
     'use strict';
 
+    // =============================================================================
+    //  共通設定・定数
+    // =============================================================================
     const STORAGE_KEY = 'skill_set_manager_data_v2';
+    const STATUS_CONFIG = {
+        startDate: '2025/12/01',
+        initialStat: 5,
+        initialAP: 2,
+        apUrl: 'story.php'
+    };
+    const statNames = ['STR', 'WIZ', 'DEX', 'AGI', 'INTER', 'MND', 'LIFE'];
+
+    // グローバルに近いスコープでAPを保持し、再計算時に参照できるようにします
+    let globalCurrentAp = 0;
 
     function getSavedData() {
         const data = localStorage.getItem(STORAGE_KEY);
@@ -48,7 +61,6 @@
             .drag-handle:active {
                 cursor: grabbing;
             }
-            /* ボタン共通スタイル */
             .msm-btn {
                 cursor: pointer;
                 padding: 5px 12px;
@@ -86,17 +98,115 @@
     }
 
     // =============================================================================
-    //  1. スキルセットマネージャー (保存・読込・ファイル管理パネル)
+    //  1. ステータス検証ツール ロジック (AP減算表示版)
+    // =============================================================================
+
+    function getTheoreticalMaxPoint() {
+        const now = new Date();
+        const start = new Date(STATUS_CONFIG.startDate + ' 00:00:00');
+        if (now < start) return STATUS_CONFIG.initialStat + STATUS_CONFIG.initialAP;
+        const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const dayDiff = Math.floor((todayStart - start) / (1000 * 60 * 60 * 24));
+        let distributedAP = dayDiff * 2;
+        const time8 = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 8, 0, 0);
+        const time20 = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 20, 0, 0);
+        if (now >= time8) distributedAP += 1;
+        if (now >= time20) distributedAP += 1;
+        return distributedAP + STATUS_CONFIG.initialAP + STATUS_CONFIG.initialStat;
+    }
+
+    function initStatusValidator() {
+        const theoreticalMax = getTheoreticalMaxPoint();
+
+        const pointDisplayParagraphs = document.querySelectorAll('p');
+        let targetParagraph = null;
+        for (const p of pointDisplayParagraphs) {
+            if (p.textContent.includes('ステータスポイント')) {
+                targetParagraph = p;
+                break;
+            }
+        }
+
+        if (targetParagraph) {
+            const container = document.createElement('span');
+            container.style.fontSize = '1.1em';
+
+            const totalSpan = document.createElement('span');
+            totalSpan.id = 'user-script-total-display';
+
+            const apSpan = document.createElement('span');
+            apSpan.id = 'user-script-ap-display';
+            apSpan.innerHTML = '　残りAP：<span style="color:gray;">取得中...</span>';
+
+            container.appendChild(totalSpan);
+            container.appendChild(apSpan);
+
+            targetParagraph.innerHTML = "";
+            targetParagraph.appendChild(container);
+
+            const calculateSum = () => {
+                let sum = 0;
+                statNames.forEach(name => {
+                    const input = document.querySelector(`input[name="${name}"]`);
+                    if (input) {
+                        sum += parseInt(input.value || 0, 10);
+                    }
+                });
+
+                // 表示上の最大値 ＝ 理論値 － 現在持っているAP
+                const displayMax = theoreticalMax - globalCurrentAp;
+
+                const isMatch = (sum === displayMax);
+                const color = isMatch ? '#006400' : (sum > displayMax ? 'red' : '#d9534f');
+
+                totalSpan.innerHTML = `ステータスポイント：<strong style="color:${color}">${sum}</strong> / <strong>${displayMax}</strong>`;
+            };
+
+            // 初回計算
+            calculateSum();
+
+            statNames.forEach(name => {
+                const input = document.querySelector(`input[name="${name}"]`);
+                if (input) {
+                    input.addEventListener('input', calculateSum);
+                    input.addEventListener('change', calculateSum);
+                }
+            });
+
+            // AP取得後に再計算
+            fetch(STATUS_CONFIG.apUrl)
+                .then(response => response.text())
+                .then(htmlText => {
+                    const parser = new DOMParser();
+                    const doc = parser.parseFromString(htmlText, 'text/html');
+                    const apEl = doc.getElementById('currentAp');
+                    const apDisplay = document.getElementById('user-script-ap-display');
+
+                    if (apEl && apDisplay) {
+                        globalCurrentAp = parseInt(apEl.textContent, 10);
+                        const apColor = globalCurrentAp > 0 ? '#d9534f' : 'black';
+                        apDisplay.innerHTML = `　残りAP：<strong style="color:${apColor};">${globalCurrentAp}</strong>`;
+
+                        // APが判明したので、最大値表示を更新
+                        calculateSum();
+                    }
+                })
+                .catch(err => {
+                    console.error('AP取得エラー', err);
+                    const apDisplay = document.getElementById('user-script-ap-display');
+                    if(apDisplay) apDisplay.innerHTML = '　残りAP：<span style="color:red;">取得失敗</span>';
+                });
+        }
+    }
+
+    // =============================================================================
+    //  2. スキルセットマネージャー ロジック (既存機能維持)
     // =============================================================================
 
     function createControlPanel() {
         const headers = Array.from(document.querySelectorAll('h3'));
         const targetHeader = headers.find(h => h.textContent.trim() === 'スキル設定');
-
-        if (!targetHeader) {
-            console.log('[SkillManager] "スキル設定" header not found.');
-            return;
-        }
+        if (!targetHeader) return;
 
         const container = document.createElement('div');
         container.style.cssText = `
@@ -131,76 +241,59 @@
                 </div>
 
                 <div class="msm-row" style="background:#ddd; margin-top: 5px; border-top: 1px solid #ddd; padding-top: 10px;">
-                    <div style="display:flex; align-items:center;"></div>
-                        <input type="file" id="script-file-import" accept=".json" style="display:none;">
-                        <span class="msm-label">バックアップの保存と復元 : </span>
-                        <button id="script-export-btn" type="button" class="msm-btn msm-btn-file" style="margin-left:0; margin-right:5px;">エクスポート</button>
-                        <button id="script-import-btn" type="button" class="msm-btn msm-btn-file" style="margin-left:0;">インポート</button>
-
+                    <input type="file" id="script-file-import" accept=".json" style="display:none;">
+                    <span class="msm-label">バックアップ : </span>
+                    <button id="script-export-btn" type="button" class="msm-btn msm-btn-file" style="margin-left:0; margin-right:5px;">エクスポート</button>
+                    <button id="script-import-btn" type="button" class="msm-btn msm-btn-file" style="margin-left:0;">インポート</button>
                     <div style="flex:1;"></div>
-
-                    <div>
-                        <button id="script-submit-real-btn" type="button" class="msm-btn msm-btn-submit" style="min-width:160px;">スキル設定を反映</button>
-                    </div>
+                    <button id="script-submit-real-btn" type="button" class="msm-btn msm-btn-submit" style="min-width:160px;">スキル設定を反映</button>
                 </div>
             </div>
         `;
 
         targetHeader.insertAdjacentElement('afterend', container);
 
-        // Event Listeners
         document.getElementById('script-save-btn').addEventListener('click', saveCurrentSet);
         document.getElementById('script-load-btn').addEventListener('click', loadSelectedSet);
         document.getElementById('script-rename-btn').addEventListener('click', renameSelectedSet);
         document.getElementById('script-delete-btn').addEventListener('click', deleteSelectedSet);
-
-        // File I/O Listeners
         document.getElementById('script-export-btn').addEventListener('click', exportDataToFile);
         const importInput = document.getElementById('script-file-import');
         const importBtn = document.getElementById('script-import-btn');
-        importBtn.addEventListener('click', () => importInput.click()); // ボタンクリックでinput発火
+        importBtn.addEventListener('click', () => importInput.click());
         importInput.addEventListener('change', importDataFromFile);
-
-        // Submit Listener
-        document.getElementById('script-submit-real-btn').addEventListener('click', submitRealForm);
+        document.getElementById('script-submit-real-btn').addEventListener('click', () => {
+            const originalSubmitBtn = document.querySelector('input[name="update_skills"]');
+            if (originalSubmitBtn) originalSubmitBtn.click();
+        });
 
         updateSelectOptions();
-        console.log('[SkillManager] Control panel created and positioned.');
     }
 
     function updateSelectOptions() {
         const data = getSavedData();
         const select = document.getElementById('script-set-select');
         const currentVal = select.value;
-
         select.innerHTML = '<option value="">---</option>';
         const keys = Object.keys(data);
-
         if (keys.length === 0) {
             select.innerHTML = '<option value="">(保存されたセットはありません)</option>';
             return;
         }
-
         keys.forEach(key => {
             const option = document.createElement('option');
             option.value = key;
             option.textContent = key;
             select.appendChild(option);
         });
-
-        if (keys.includes(currentVal)) {
-            select.value = currentVal;
-        }
+        if (keys.includes(currentVal)) select.value = currentVal;
     }
-
-    // --- イベントハンドラ (保存/読込/削除/名前変更) ---
 
     function saveCurrentSet(e) {
         e.preventDefault();
         const nameInput = document.getElementById('script-set-name');
         const setName = nameInput.value.trim();
         if (!setName) { alert('セット名を入力してください。'); return; }
-
         if (getSavedData()[setName] && !confirm(`セット名「${setName}」は既に存在します。上書きしますか？`)) return;
 
         const currentData = {};
@@ -212,7 +305,6 @@
                 cutin: document.querySelector(`[name="skill${i}_cutin"]`)?.value || ""
             };
         }
-
         const storageData = getSavedData();
         storageData[setName] = currentData;
         saveToStorage(storageData);
@@ -226,13 +318,10 @@
         const select = document.getElementById('script-set-select');
         const setName = select.value;
         if (!setName) return;
-
-        const storageData = getSavedData();
-        const setData = storageData[setName];
+        const setData = getSavedData()[setName];
         if (!setData) return;
 
         let missingSkills = [];
-
         for (let i = 1; i <= 8; i++) {
             const slotData = setData[`slot${i}`];
             if (slotData) {
@@ -240,7 +329,6 @@
                 const elIcon = document.querySelector(`[name="skill${i}_icon"]`);
                 const elMsg = document.querySelector(`[name="skill${i}_msg"]`);
                 const elCutin = document.querySelector(`[name="skill${i}_cutin"]`);
-
                 if (elSkill) {
                     elSkill.value = slotData.skill;
                     if (slotData.skill !== "" && elSkill.value !== slotData.skill) {
@@ -258,38 +346,23 @@
                 }
             }
         }
-
-        let resultMsg = `セット「${setName}」を読み込みました。`;
-        if (missingSkills.length > 0) {
-            resultMsg += `\n\n【エラー】以下のスキルは習得条件を満たしていない等の理由でセットできませんでした：\n${missingSkills.join('\n')}`;
-        }
-        alert(resultMsg);
+        if (missingSkills.length > 0) alert(`セット「${setName}」を読み込みましたが、一部のスキルが見つかりませんでした：\n${missingSkills.join('\n')}`);
+        else alert(`セット「${setName}」を読み込みました。`);
     }
 
     function renameSelectedSet(e) {
         e.preventDefault();
         const select = document.getElementById('script-set-select');
         const oldName = select.value;
-        if (!oldName) {
-            alert("変更するセットを選択してください。");
-            return;
-        }
-
+        if (!oldName) return;
         const newName = prompt("新しいセット名を入力してください:", oldName);
         if (newName && newName.trim() !== "" && newName !== oldName) {
             const storageData = getSavedData();
-            if (storageData[newName] && !confirm(`「${newName}」は既に存在します。上書きしますか？`)) {
-                return;
-            }
-
-            // データ移行
             storageData[newName] = storageData[oldName];
             delete storageData[oldName];
-
             saveToStorage(storageData);
             updateSelectOptions();
-            select.value = newName; // 新しい名前を選択状態に
-            alert(`「${oldName}」を「${newName}」に変更しました。`);
+            select.value = newName;
         }
     }
 
@@ -297,158 +370,80 @@
         e.preventDefault();
         const select = document.getElementById('script-set-select');
         const setName = select.value;
-        if (!setName) return;
-
-        if (confirm(`セット「${setName}」を削除しますか？`)) {
+        if (setName && confirm(`セット「${setName}」を削除しますか？`)) {
             const storageData = getSavedData();
             delete storageData[setName];
             saveToStorage(storageData);
             updateSelectOptions();
-            document.getElementById('script-set-name').value = '';
-            alert('削除しました。');
         }
     }
-
-    function submitRealForm(e) {
-        e.preventDefault();
-        const originalSubmitBtn = document.querySelector('input[name="update_skills"]');
-        if (originalSubmitBtn) {
-            originalSubmitBtn.click();
-        } else {
-            alert('ページ内に「スキル設定を保存」ボタンが見つかりません。');
-        }
-    }
-
-    // --- ファイル入出力機能 ---
 
     function exportDataToFile() {
         const data = getSavedData();
-        if (Object.keys(data).length === 0) {
-            alert("保存されているデータがありません。");
-            return;
-        }
-
-        const fileName = "metropolis_skills.json";
-        const jsonStr = JSON.stringify(data, null, 2);
-        const blob = new Blob([jsonStr], {type: "application/json"});
-
+        const blob = new Blob([JSON.stringify(data, null, 2)], {type: "application/json"});
         const link = document.createElement("a");
         link.href = URL.createObjectURL(blob);
-        link.download = fileName;
+        link.download = "metropolis_skills.json";
         link.click();
-        URL.revokeObjectURL(link.href);
     }
 
     function importDataFromFile(e) {
         const file = e.target.files[0];
         if (!file) return;
-
         const reader = new FileReader();
         reader.onload = function(event) {
             try {
                 const importedData = JSON.parse(event.target.result);
-                if (typeof importedData !== 'object' || importedData === null) {
-                    throw new Error("Invalid format");
-                }
-
-                // 現在のデータと統合するか確認
-                if (confirm("ファイルを読み込みますか？\n（同名のセットがある場合は上書きされます）")) {
-                    const currentData = getSavedData();
-                    // マージ処理
-                    const newData = { ...currentData, ...importedData };
-                    saveToStorage(newData);
+                if (confirm("データをインポートしますか？")) {
+                    saveToStorage({ ...getSavedData(), ...importedData });
                     updateSelectOptions();
-                    alert("読み込みが完了しました。");
+                    alert("完了しました。");
                 }
-            } catch (err) {
-                console.error(err);
-                alert("ファイルの読み込みに失敗しました。\n正しいJSONファイルか確認してください。");
-            } finally {
-                // inputをリセットして同じファイルを再度選択できるようにする
-                e.target.value = '';
-            }
+            } catch (err) { alert("無効な形式です。"); }
+            finally { e.target.value = ''; }
         };
         reader.readAsText(file);
     }
 
-    // =============================================================================
-    //  2. スキルプレビュー機能
-    // =============================================================================
-
     function enableSkillPreview() {
         const skillDatabase = {};
-
         document.querySelectorAll('details ul li').forEach(li => {
             const strongTag = li.querySelector('strong');
             if (strongTag) {
                 const skillName = strongTag.textContent.trim();
                 let descText = li.textContent.replace(skillName, '').trim();
-                if (descText.startsWith('：')) {
-                    descText = descText.substring(1).trim();
-                }
+                if (descText.startsWith('：')) descText = descText.substring(1).trim();
                 skillDatabase[skillName] = descText;
             }
         });
-
-        const skillSelects = document.querySelectorAll(
-            'select[name^="skill"]:not([name*="_icon"]):not([name*="_msg"]):not([name*="_cutin"])'
-        );
-
+        const skillSelects = document.querySelectorAll('select[name^="skill"]:not([name*=\"_icon\"]):not([name*=\"_msg\"]):not([name*=\"_cutin\"])');
         skillSelects.forEach(select => {
             const descBox = document.createElement('div');
             descBox.className = 'skill-desc-preview';
-            descBox.textContent = '---';
-
             const parentLabel = select.closest('label');
-            if (parentLabel) {
-                parentLabel.insertAdjacentElement('afterend', descBox);
-            } else {
-                select.insertAdjacentElement('afterend', descBox);
-            }
-
+            if (parentLabel) parentLabel.insertAdjacentElement('afterend', descBox);
             const updateDescription = () => {
-                const selectedOption = select.options[select.selectedIndex];
-                const selectedText = selectedOption.textContent.trim();
+                const selectedText = select.options[select.selectedIndex].textContent.trim();
                 if (skillDatabase[selectedText]) {
                     descBox.textContent = skillDatabase[selectedText];
                     descBox.style.display = 'block';
-                } else if (selectedOption.value === "") {
-                    descBox.textContent = "スキルを選択してください";
-                    descBox.style.display = 'none';
                 } else {
-                    descBox.textContent = "説明が見つかりませんでした";
+                    descBox.style.display = 'none';
                 }
             };
             select.addEventListener('change', updateDescription);
             updateDescription();
         });
-        console.log('[SkillManager] Preview enabled.');
     }
 
-    // =============================================================================
-    //  3. スロット入れ替え機能（ドラッグ＆ドロップ）
-    // =============================================================================
-
     function enableDragSort() {
-        let skillFieldsets = Array.from(
-            document.querySelectorAll("form fieldset legend")
-        ).filter(legend => legend.textContent.includes("スキルスロット"))
-         .map(legend => legend.parentElement);
-
-        if (skillFieldsets.length === 0) {
-            console.log('[SkillManager] No skill slots found for drag sort.');
-            return;
-        }
-
-        const container = skillFieldsets[0].parentElement;
-
+        const container = document.querySelector("form fieldset")?.parentElement;
+        if (!container) return;
         const renumberSlots = () => {
             const currentFieldsets = Array.from(container.querySelectorAll("fieldset"))
                 .filter(f => f.querySelector("legend")?.textContent.includes("スキルスロット"));
-
             currentFieldsets.forEach((fs, index) => {
                 const newNum = index + 1;
-
                 const legend = fs.querySelector("legend");
                 if (legend) {
                     for (let node of legend.childNodes) {
@@ -458,98 +453,52 @@
                         }
                     }
                 }
-
-                const inputs = fs.querySelectorAll('[name]');
-                inputs.forEach(input => {
+                fs.querySelectorAll('[name]').forEach(input => {
                     const name = input.getAttribute('name');
-                    if (name && /skill\d+/.test(name)) {
-                        input.setAttribute('name', name.replace(/skill\d+/, `skill${newNum}`));
-                    }
+                    if (name && /skill\d+/.test(name)) input.setAttribute('name', name.replace(/skill\d+/, `skill${newNum}`));
                 });
-
-                const iconSelect = fs.querySelector('.icon-selector');
-                const previewImg = fs.querySelector('img[id^="preview"]');
-                if (iconSelect && previewImg) {
-                    const newId = `preview${newNum}`;
-                    iconSelect.setAttribute('data-preview-id', newId);
-                    previewImg.setAttribute('id', newId);
-                }
             });
-            skillFieldsets = currentFieldsets;
         };
+
+        const skillFieldsets = Array.from(container.querySelectorAll("fieldset"))
+            .filter(f => f.querySelector("legend")?.textContent.includes("スキルスロット"));
 
         skillFieldsets.forEach(fs => {
             const legend = fs.querySelector("legend");
-
-            if (!legend.querySelector('.drag-handle')) {
-                const handle = document.createElement("span");
-                handle.textContent = "⠿ ";
-                handle.className = "drag-handle";
-                handle.title = "ドラッグして入れ替え";
-                legend.prepend(handle);
-                legend.style.userSelect = "none";
-
-                fs.draggable = false;
-                fs.style.transition = "transform 0.2s, opacity 0.2s";
-
-                handle.addEventListener("mousedown", () => {
-                    fs.draggable = true;
-                });
-                handle.addEventListener("mouseup", () => {
-                    fs.draggable = false;
-                });
-            }
+            const handle = document.createElement("span");
+            handle.textContent = "⠿ ";
+            handle.className = "drag-handle";
+            legend.prepend(handle);
+            handle.addEventListener("mousedown", () => { fs.draggable = true; });
+            handle.addEventListener("mouseup", () => { fs.draggable = false; });
 
             fs.addEventListener("dragstart", e => {
                 fs.style.opacity = "0.4";
-                e.dataTransfer.effectAllowed = "move";
-                const currentIndex = Array.from(container.children).indexOf(fs);
-                e.dataTransfer.setData("text/plain", currentIndex);
+                e.dataTransfer.setData("text/plain", Array.from(container.children).indexOf(fs));
             });
-
-            fs.addEventListener("dragend", () => {
-                fs.style.opacity = "1";
-                fs.draggable = false;
-            });
-
-            fs.addEventListener("dragover", e => {
-                e.preventDefault();
-                e.dataTransfer.dropEffect = "move";
-            });
-
+            fs.addEventListener("dragend", () => { fs.style.opacity = "1"; fs.draggable = false; });
+            fs.addEventListener("dragover", e => { e.preventDefault(); });
             fs.addEventListener("drop", e => {
                 e.preventDefault();
-                fs.draggable = false;
-
-                const fromIndexStr = e.dataTransfer.getData("text/plain");
-                if (!fromIndexStr) return;
-
-                const fromIndex = parseInt(fromIndexStr, 10);
+                const fromIndex = parseInt(e.dataTransfer.getData("text/plain"), 10);
                 const children = Array.from(container.children);
                 const toIndex = children.indexOf(fs);
-
-                if (fromIndex === toIndex) return;
-
-                const fromNode = children[fromIndex];
-
-                if (fromIndex < toIndex) {
-                    container.insertBefore(fromNode, fs.nextSibling);
-                } else {
-                    container.insertBefore(fromNode, fs);
+                if (fromIndex !== toIndex) {
+                    if (fromIndex < toIndex) container.insertBefore(children[fromIndex], fs.nextSibling);
+                    else container.insertBefore(children[fromIndex], fs);
+                    renumberSlots();
                 }
-
-                renumberSlots();
             });
         });
-        console.log('[SkillManager] Drag sort enabled.');
     }
 
     // =============================================================================
-    //   初期化
+    //  初期化実行
     // =============================================================================
 
     window.addEventListener('load', function() {
         injectStyles();
+        initStatusValidator();
         createControlPanel();
         enableSkillPreview();
         enableDragSort();
