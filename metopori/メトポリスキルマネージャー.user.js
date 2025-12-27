@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         メトポリスキルマネージャー
 // @namespace    http://tampermonkey.net/
-// @version      1.2
-// @description  スキル構成の保存・読込・ファイル入出力、スロットのドラッグ＆ドロップ並べ替え、ステータス合計の表示
+// @version      1.2.1
+// @description  スキル構成の保存・読込・ファイル入出力、スロットのドラッグ＆ドロップ並べ替え（並び順自動更新対応）、ステータス合計の表示
 // @author       ayautaginrei(Gemini)
 // @match        https://metropolis-c-openbeta.sakuraweb.com/status*
 // @update       https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/metopori/%E3%83%A1%E3%83%88%E3%83%9D%E3%83%AA%E3%82%B9%E3%82%AD%E3%83%AB%E3%83%9E%E3%83%8D%E3%83%BC%E3%82%B8%E3%83%A3%E3%83%BC.user.js
@@ -439,11 +439,14 @@
     function enableDragSort() {
         const container = document.querySelector("form fieldset")?.parentElement;
         if (!container) return;
+
         const renumberSlots = () => {
             const currentFieldsets = Array.from(container.querySelectorAll("fieldset"))
                 .filter(f => f.querySelector("legend")?.textContent.includes("スキルスロット"));
+
             currentFieldsets.forEach((fs, index) => {
                 const newNum = index + 1;
+
                 const legend = fs.querySelector("legend");
                 if (legend) {
                     for (let node of legend.childNodes) {
@@ -453,10 +456,35 @@
                         }
                     }
                 }
+
+
                 fs.querySelectorAll('[name]').forEach(input => {
                     const name = input.getAttribute('name');
-                    if (name && /skill\d+/.test(name)) input.setAttribute('name', name.replace(/skill\d+/, `skill${newNum}`));
+                    if (name) {
+                        const newName = name.replace(/\d+/, newNum);
+                        if (newName !== name) {
+                            input.setAttribute('name', newName);
+                        }
+                    }
                 });
+
+
+                const labels = Array.from(fs.querySelectorAll('label'));
+                const orderLabel = labels.find(l => l.textContent.includes('並び順'));
+
+                if (orderLabel) {
+                    let orderInput = orderLabel.querySelector('input, select');
+                    if (!orderInput && orderLabel.hasAttribute('for')) {
+                        const forId = orderLabel.getAttribute('for');
+                        orderInput = fs.querySelector(`#${forId}`);
+                    }
+
+                    if (orderInput) {
+                        orderInput.value = newNum;
+                        orderInput.dispatchEvent(new Event('change', { bubbles: true }));
+                        orderInput.dispatchEvent(new Event('input', { bubbles: true }));
+                    }
+                }
             });
         };
 
