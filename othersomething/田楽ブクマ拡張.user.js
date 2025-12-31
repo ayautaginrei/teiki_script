@@ -5,7 +5,7 @@
 // @description  ブックマークの拡張（並び替え・文字色変更・通知ミュート）
 // @author       ayautaginrei(gemini)
 // @match        https://ironbunny.net/digi_nir/*
-// @update       
+// @update       https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/othersomething/%E7%94%B0%E6%A5%BD%E3%83%96%E3%82%AF%E3%83%9E%E6%8B%A1%E5%BC%B5.user.js
 // @icon         https://ironbunny.net/digi_nir/imgs/favicon.ico
 // @require      https://code.jquery.com/jquery-3.7.1.min.js
 // @require      https://code.jquery.com/ui/1.13.3/jquery-ui.min.js
