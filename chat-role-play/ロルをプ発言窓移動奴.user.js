@@ -5,7 +5,7 @@
 // @description  発言・ト書き欄を上部に移動し、それぞれの開閉状態を個別に記憶します
 // @author       ayautaginrei(Gemini)
 // @match        https://wolfort.dev/*
-// @updateURL    
+// @updateURL    https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/chat-role-play/%E3%83%AD%E3%83%AB%E3%82%92%E3%83%97%E7%99%BA%E8%A8%80%E7%AA%93%E7%A7%BB%E5%8B%95%E5%A5%B4.user.js
 // @include      */games/*
 // @grant        none
 // ==/UserScript==
