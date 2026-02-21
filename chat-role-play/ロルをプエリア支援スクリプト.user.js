@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ロルをプエリア支援スクリプト
 // @namespace    http://tampermonkey.net/
-// @version      1.0
-// @description  チャット欄への場所タグ挿入機能と、サイドバーにエリア移動メニューを追加
+// @version      1.1
+// @description  チャット欄への場所タグ挿入機能と、サイドバーにエリア移動メニューを追加　ついでに入力内容保持機能を追加
 // @author       ayautaginrei(Gemini)
 // @match        https://wolfort.dev/*
 // @updateURL    https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/chat-role-play/%E3%83%AD%E3%83%AB%E3%82%92%E3%83%97%E3%82%A8%E3%83%AA%E3%82%A2%E6%94%AF%E6%8F%B4%E3%82%B9%E3%82%AF%E3%83%AA%E3%83%97%E3%83%88.user.js
@@ -37,89 +37,109 @@
 
 
 
+    const STORAGE_KEY_PREFIX = "wolfort_draft_";
+
     const observer = new MutationObserver(() => {
         initWidgets();
         initSidebarMenu();
+        initAutoSave();
+        initSubmitListener();
     });
     observer.observe(document.body, { childList: true, subtree: true });
 
     initWidgets();
     initSidebarMenu();
+    setTimeout(restoreData, 500);
+
+    function getGameId() {
+        const match = window.location.href.match(/games\/(\d+)/);
+        return match ? match[1] : 'default';
+    }
+
+    function initAutoSave() {
+        const textarea = document.querySelector('textarea[name="talkMessage"]');
+        if (!textarea || textarea.dataset.hasSaveHandler) return;
+
+        textarea.dataset.hasSaveHandler = "true";
+        textarea.addEventListener('input', () => {
+            const data = {
+                text: textarea.value,
+                timestamp: Date.now()
+            };
+            localStorage.setItem(STORAGE_KEY_PREFIX + getGameId(), JSON.stringify(data));
+        });
+    }
+
+    function restoreData() {
+        const savedJson = localStorage.getItem(STORAGE_KEY_PREFIX + getGameId());
+        if (!savedJson) return;
+
+        const data = JSON.parse(savedJson);
+        const textarea = document.querySelector('textarea[name="talkMessage"]');
+
+        if (textarea && data.text && textarea.value === "") {
+            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+            nativeInputValueSetter.call(textarea, data.text);
+            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+    }
+
+    function initSubmitListener() {
+        document.body.addEventListener('click', (e) => {
+            if (e.target.tagName === 'BUTTON' && e.target.textContent.includes('発言する')) {
+                localStorage.removeItem(STORAGE_KEY_PREFIX + getGameId());
+            }
+        }, true);
+    }
 
     function initWidgets() {
         const decorators = document.querySelectorAll('p.text-xs.font-bold');
         decorators.forEach(label => {
             if (label.textContent !== '発言装飾') return;
             const container = label.nextElementSibling;
-            if (!container || !container.classList.contains('flex')) return;
-            const buttonGroup = container.querySelector('div');
-            if (!buttonGroup || buttonGroup.querySelector('.custom-location-inserter')) return;
+            if (!container || !container.classList.contains('flex') || container.querySelector('.custom-location-inserter')) return;
 
-            buttonGroup.appendChild(createWidget(container));
+            const wrapper = document.createElement('span');
+            wrapper.className = 'custom-location-inserter';
+            const select = document.createElement('select');
+            select.className = "base-border ml-1 border p-1 text-xs text-gray-700";
+
+            const urlParams = new URLSearchParams(window.location.search);
+            const currentMkParam = decodeURIComponent(urlParams.get('mk') || '').replace(/^#/, '');
+
+            select.add(new Option("[エリア]", ""));
+            LOCATION_LIST.forEach(item => {
+                const opt = new Option(item.label, item.value);
+                if (currentMkParam && item.value === currentMkParam) opt.selected = true;
+                select.add(opt);
+            });
+
+            const button = document.createElement('button');
+            button.className = "base-border ml-1 min-w-[24px] rounded-sm border p-1 text-xs hover:bg-blue-300";
+            button.textContent = "挿入";
+            button.onclick = (e) => {
+                e.preventDefault();
+                if (!select.value) return;
+                const textarea = container.closest('form').querySelector('textarea[name="talkMessage"]');
+                if (textarea) insertTextAtCursor(textarea, `[${COLOR_CODE}]#${select.value}[/#]`);
+            };
+
+            wrapper.appendChild(select);
+            wrapper.appendChild(button);
+            container.querySelector('div').appendChild(wrapper);
         });
-    }
-
-    function createWidget(containerScope) {
-        const wrapper = document.createElement('span');
-        wrapper.className = 'custom-location-inserter';
-
-        const select = document.createElement('select');
-        select.className = "base-border ml-1 border p-1 text-xs text-gray-700";
-        select.style.cursor = "pointer";
-
-        const urlParams = new URLSearchParams(window.location.search);
-        const currentMkParam = decodeURIComponent(urlParams.get('mk') || '').replace(/^#/, '');
-
-        const defaultOption = document.createElement('option');
-        defaultOption.text = "[エリア]";
-        defaultOption.value = "";
-        select.appendChild(defaultOption);
-
-        LOCATION_LIST.forEach(item => {
-            const opt = document.createElement('option');
-            opt.text = item.label;
-            opt.value = item.value;
-            if (currentMkParam && item.value === currentMkParam) {
-                opt.selected = true;
-            }
-            select.appendChild(opt);
-        });
-
-        const button = document.createElement('button');
-        button.className = "base-border ml-1 min-w-[24px] rounded-sm border p-1 text-xs hover:bg-blue-300";
-        button.textContent = "挿入";
-        button.type = "button";
-
-        button.addEventListener('click', (e) => {
-            e.preventDefault();
-            if (!select.value) return;
-            const textToInsert = `[${COLOR_CODE}]#${select.value}[/#]`;
-            const form = containerScope.closest('form');
-            if (!form) return;
-            const textarea = form.querySelector('textarea[name="talkMessage"]');
-            if (textarea) insertTextAtCursor(textarea, textToInsert);
-        });
-
-        wrapper.appendChild(select);
-        wrapper.appendChild(button);
-        return wrapper;
     }
 
     function insertTextAtCursor(textarea, text) {
         const start = textarea.selectionStart;
         const end = textarea.selectionEnd;
-        const originalText = textarea.value;
-        const newText = originalText.substring(0, start) + text + originalText.substring(end);
-
-        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
-        if (nativeInputValueSetter) {
-            nativeInputValueSetter.call(textarea, newText);
-        } else {
-            textarea.value = newText;
-        }
+        const val = textarea.value;
+        const newVal = val.substring(0, start) + text + val.substring(end);
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+        setter.call(textarea, newVal);
         textarea.dispatchEvent(new Event('input', { bubbles: true }));
-        textarea.focus();
         textarea.setSelectionRange(start + text.length, start + text.length);
+        textarea.focus();
     }
 
     function initSidebarMenu() {
@@ -128,55 +148,30 @@
 
         const container = document.createElement('div');
         container.className = 'base-border border-t py-2 custom-area-menu-container';
-
-        const header = document.createElement('div');
-        header.className = 'sidebar-text flex w-full justify-start px-4 py-2 text-sm font-bold';
-        header.innerHTML = `
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="mr-1 h-5 w-5">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M15 10.5a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
-              <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1 1 15 0Z" />
-            </svg>
-            <p class="flex-1 self-center text-left">エリア移動</p>
-        `;
+        container.innerHTML = `<div class="sidebar-text flex w-full justify-start px-4 py-2 text-sm font-bold">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="mr-1 h-5 w-5"><path stroke-linecap="round" stroke-linejoin="round" d="M15 10.5a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" /><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1 1 15 0Z" /></svg>
+            <p class="flex-1 self-center text-left">エリア移動</p></div>`;
 
         const listContainer = document.createElement('div');
         listContainer.style.paddingLeft = '1rem';
 
-        createSidebarButton(listContainer, "全体", null);
+        const addBtn = (label, val) => {
+            const btn = document.createElement('button');
+            btn.className = 'sidebar-hover sidebar-text flex w-full justify-start px-4 py-1 text-xs';
+            btn.textContent = label;
+            btn.style.width = '100%';
+            btn.style.textAlign = 'left';
+            btn.onclick = (e) => {
+                e.preventDefault();
+                const m = window.location.href.match(/^(https:\/\/wolfort\.dev\/chat-role-play\/games\/\d+)/);
+                if (m) window.location.href = val ? `${m[1]}?mk=%23${val}` : m[1];
+            };
+            listContainer.appendChild(btn);
+        };
 
-        LOCATION_LIST.forEach(item => {
-            createSidebarButton(listContainer, item.label, item.value);
-        });
-
-        container.appendChild(header);
+        addBtn("全体", null);
+        LOCATION_LIST.forEach(item => addBtn(item.label, item.value));
         container.appendChild(listContainer);
         sidebar.appendChild(container);
     }
-
-    function createSidebarButton(container, label, areaValue) {
-        const btn = document.createElement('button');
-        btn.className = 'sidebar-hover sidebar-text flex w-full justify-start px-4 py-1 text-xs';
-        btn.textContent = label;
-        btn.style.width = '100%';
-        btn.style.textAlign = 'left';
-        btn.style.opacity = '0.9';
-        btn.addEventListener('click', (e) => {
-            e.preventDefault();
-            navigateToArea(areaValue);
-        });
-        container.appendChild(btn);
-    }
-
-    function navigateToArea(areaName) {
-        const currentUrl = window.location.href;
-        const match = currentUrl.match(/^(https:\/\/wolfort\.dev\/chat-role-play\/games\/\d+)/);
-        if (!match) return;
-
-        if (areaName) {
-            window.location.href = `${match[1]}?mk=%23${areaName}`;
-        } else {
-            window.location.href = match[1];
-        }
-    }
-
 })();
