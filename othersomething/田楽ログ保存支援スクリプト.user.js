@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         電脳快楽幽玄浄土ログ保存支援スクリプト
+// @name         田楽ログ保存支援スクリプト
 // @namespace    http://tampermonkey.net/
 // @version      1.0
 // @description  ページャーを遡ってチャットログを取得し、HTMLとして保存します
