@@ -5,7 +5,7 @@
 // @description  ページャーを遡ってチャットログを取得し、HTMLとして保存します
 // @author       ayautaginrei
 // @match        https://ironbunny.net/digi_nir/chat.php*
-// @updateURL    https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/othersomething/.user.js
+// @updateURL    https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/othersomething/%E7%94%B0%E6%A5%BD%E3%83%AD%E3%82%B0%E4%BF%9D%E5%AD%98%E6%94%AF%E6%8F%B4%E3%82%B9%E3%82%AF%E3%83%AA%E3%83%97%E3%83%88.user.js
 // @grant        none
 // ==/UserScript==
 
