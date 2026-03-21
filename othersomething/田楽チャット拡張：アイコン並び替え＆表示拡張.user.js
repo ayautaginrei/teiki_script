@@ -5,7 +5,7 @@
 // @description  マイページでのアイコン並び替え機能とアイコン選択リストの表示領域拡張
 // @author       ayautaginrei(gemini)
 // @match        https://ironbunny.net/digi_nir/*
-// @updateURL    
+// @updateURL    https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/othersomething/%E7%94%B0%E6%A5%BD%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E6%8B%A1%E5%BC%B5%EF%BC%9A%E3%82%A2%E3%82%A4%E3%82%B3%E3%83%B3%E4%B8%A6%E3%81%B3%E6%9B%BF%E3%81%88%EF%BC%86%E8%A1%A8%E7%A4%BA%E6%8B%A1%E5%BC%B5.user.js
 // @grant        none
 // ==/UserScript==
 
