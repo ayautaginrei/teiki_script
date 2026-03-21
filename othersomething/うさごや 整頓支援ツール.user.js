@@ -5,7 +5,7 @@
 // @description  キーワードを登録して検索しやすくしたり一括選択機能
 // @author       ayautaginrei(gemini)
 // @match        https://rabbithutch.site/usagoya/filelist.php
-// @upgradeURL
+// @updateURL    https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/othersomething/%E3%81%86%E3%81%95%E3%81%94%E3%82%84%20%E6%95%B4%E9%A0%93%E6%94%AF%E6%8F%B4%E3%83%84%E3%83%BC%E3%83%AB.user.js
 // @grant        none
 // ==/UserScript==
 
