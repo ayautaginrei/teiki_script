@@ -5,7 +5,7 @@
 // @description  ショップID指定移動・前後移動スクリプト
 // @author       ayautaginrei
 // @match        https://sapphiredevil.sakura.ne.jp/makeit/btest/public_html/*
-// @updateURL    
+// @updateURL    https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/makeit/%E3%82%81%E3%81%84%E3%81%8D%E3%81%A3%E3%81%A8%EF%BC%81%E5%BA%97%E8%88%97%E5%B7%A1%E5%9B%9E%E3%82%A2%E3%82%B7%E3%82%B9%E3%82%BF%E3%83%B3%E3%83%88.user.js
 // @run-at       document-end
 // ==/UserScript==
 
