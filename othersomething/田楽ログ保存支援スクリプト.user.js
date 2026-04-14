@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         田楽ログ保存支援スクリプト
 // @namespace    http://tampermonkey.net/
-// @version      1.0
-// @description  ページャーを遡ってチャットログを取得し、HTMLとして保存します
+// @version      1.1
+// @description  ページャーを遡ってチャットログと区切り線を取得し、HTMLとして保存します
 // @author       ayautaginrei(Gemini)
 // @match        https://ironbunny.net/digi_nir/chat.php*
 // @updateURL    https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/othersomething/%E7%94%B0%E6%A5%BD%E3%83%AD%E3%82%B0%E4%BF%9D%E5%AD%98%E6%94%AF%E6%8F%B4%E3%82%B9%E3%82%AF%E3%83%AA%E3%83%97%E3%83%88.user.js
@@ -63,10 +63,6 @@
                     <span>古い順に並べ替え</span>
                 </label>
                 <label style="display: flex; align-items: center; flex-flow: row; cursor: pointer; width: fit-content;">
-                    <input type="checkbox" id="chk-clean-ui" checked>
-                    <span>不要なUIを削除</span>
-                </label>
-                <label style="display: flex; align-items: center; flex-flow: row; cursor: pointer; width: fit-content;">
                     <input type="checkbox" id="chk-fetch-all" checked>
                     <span>過去ログも取得</span>
                 </label>
@@ -108,7 +104,6 @@
         document.getElementById('others_form')
     ];
 
-    // LOG SAVEタブクリック
     logButton.addEventListener('click', () => {
         document.querySelectorAll('.remark_button li').forEach(li => li.classList.remove('selected'));
         logButton.classList.add('selected');
@@ -119,14 +114,12 @@
         updateInfo();
     });
 
-    // 既存タブクリック時の挙動
     document.querySelectorAll('.remark_button li:not(#log_save_button)').forEach(btn => {
         btn.addEventListener('click', () => {
             logPanel.classList.remove('active');
         });
     });
 
-    // 「ログを取得」ボタン
     document.getElementById('btn-update-info').addEventListener('click', async () => {
         if (isFetching) return;
 
@@ -175,6 +168,15 @@
         document.getElementById('log-progress').style.display = 'none';
     }
 
+    function getJstDateStr() {
+        return new Date().toLocaleDateString('ja-JP', {
+            timeZone: 'Asia/Tokyo',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit'
+        }).replace(/\//g, '-');
+    }
+
     function fetchCurrentLogs() {
         const talkList = document.querySelector('.talk_list');
 
@@ -183,15 +185,14 @@
             return;
         }
 
-        fetchedLogs = Array.from(talkList.querySelectorAll('.chat_shout_wrapper')).map(el => el.cloneNode(true));
+        fetchedLogs = Array.from(talkList.querySelectorAll('.chat_shout_wrapper, .chat_divider')).map(el => el.cloneNode(true));
 
-        document.getElementById('info-fetched').textContent = fetchedLogs.length;
-        setStatus(`取得完了：計 ${fetchedLogs.length} 件のログを取得しました`);
+        const count = fetchedLogs.filter(el => el.classList.contains('chat_shout_wrapper')).length;
+        document.getElementById('info-fetched').textContent = count;
+        setStatus(`取得完了：計 ${count} 件のログを取得しました`);
     }
 
-async function fetchAllLogs() {
-        if (isFetching) return;
-
+    async function fetchAllLogs() {
         isFetching = true;
         setStatus('ログを取得中...');
 
@@ -239,16 +240,18 @@ async function fetchAllLogs() {
                         break;
                     }
 
-                    const logs = Array.from(talkList.querySelectorAll('.chat_shout_wrapper'));
-                    if (logs.length === 0) {
+                    const logs = Array.from(talkList.querySelectorAll('.chat_shout_wrapper, .chat_divider'));
+
+                    if (logs.filter(el => el.classList.contains('chat_shout_wrapper')).length === 0) {
                         hasMore = false;
                         break;
                     }
 
                     fetchedLogs.push(...logs.map(el => el.cloneNode(true)));
 
-                    document.getElementById('info-fetched').textContent = fetchedLogs.length;
-                    setStatus(`ページ ${page} を取得中... (計 ${fetchedLogs.length} 件)`);
+                    const currentCount = fetchedLogs.filter(el => el.classList.contains('chat_shout_wrapper')).length;
+                    document.getElementById('info-fetched').textContent = currentCount;
+                    setStatus(`ページ ${page} を取得中... (計 ${currentCount} 件)`);
 
                     page++;
 
@@ -263,15 +266,16 @@ async function fetchAllLogs() {
             if (fetchedLogs.length === 0) {
                 const currentTalkList = document.querySelector('.talk_list');
                 if (currentTalkList) {
-                    fetchedLogs = Array.from(currentTalkList.querySelectorAll('.chat_shout_wrapper')).map(el => el.cloneNode(true));
+                    fetchedLogs = Array.from(currentTalkList.querySelectorAll('.chat_shout_wrapper, .chat_divider')).map(el => el.cloneNode(true));
                 }
             }
 
             hideProgress();
-            document.getElementById('info-fetched').textContent = fetchedLogs.length;
+            const totalCount = fetchedLogs.filter(el => el.classList.contains('chat_shout_wrapper')).length;
+            document.getElementById('info-fetched').textContent = totalCount;
 
-            if (fetchedLogs.length > 0) {
-                setStatus(`取得完了：計 ${fetchedLogs.length} 件のログを取得しました`);
+            if (totalCount > 0) {
+                setStatus(`取得完了：計 ${totalCount} 件のログを取得しました`);
             } else {
                 setStatus('エラー: ログが見つかりませんでした', true);
             }
@@ -317,7 +321,6 @@ async function fetchAllLogs() {
     }
 
     function removeLinks(doc) {
-        // すべてのaタグからhref属性を削除し、クリック不可にする
         doc.querySelectorAll('a').forEach(a => {
             a.removeAttribute('href');
             a.style.cursor = 'default';
@@ -325,12 +328,10 @@ async function fetchAllLogs() {
             a.style.textDecoration = 'none';
         });
 
-        // フォームを無効化
         doc.querySelectorAll('form').forEach(form => {
             form.onsubmit = () => false;
         });
 
-        // ボタンを無効化
         doc.querySelectorAll('button, input[type="submit"], input[type="button"]').forEach(btn => {
             btn.disabled = true;
             btn.style.pointerEvents = 'none';
@@ -342,109 +343,114 @@ async function fetchAllLogs() {
     // 7. 保存実行ロジック
     // ---------------------------------------------------------
     document.getElementById('btn-save-html').addEventListener('click', () => {
-        if (fetchedLogs.length === 0) {
+        const fetchCount = fetchedLogs.filter(el => el.classList.contains('chat_shout_wrapper')).length;
+        if (fetchCount === 0) {
             setStatus('エラー: 先にログを取得してください', true);
             return;
         }
 
         setStatus('HTML生成中...');
 
-        setTimeout(() => {
-            try {
-                const cloneDoc = document.documentElement.cloneNode(true);
+        try {
+            const cloneDoc = document.documentElement.cloneNode(true);
 
-                const talkList = cloneDoc.querySelector('.talk_list');
-                if (talkList && fetchedLogs.length > 0) {
-                    talkList.innerHTML = '';
+            const talkList = cloneDoc.querySelector('.talk_list');
+            if (talkList && fetchedLogs.length > 0) {
+                talkList.innerHTML = '';
 
-                    let logsToInsert = [...fetchedLogs];
+                let logsToInsert = [...fetchedLogs];
 
-                    if (document.getElementById('chk-reverse').checked) {
-                        logsToInsert.reverse();
-                    }
-
-                    logsToInsert.forEach(log => {
-                        talkList.appendChild(log.cloneNode(true));
-                    });
+                if (document.getElementById('chk-reverse').checked) {
+                    logsToInsert.reverse();
                 }
 
-                makeLinksAbsolute(cloneDoc);
-                removeLinks(cloneDoc);
-
-                // 削除する要素のリスト
-                const selectorsToRemove = [
-                    'script',
-                    'iframe',
-                    '.remark_area',
-                    '#log_save_panel',
-                    '.menu_button',
-                    '.header_menu',
-                    '.acount_change',
-                    '.log_menu',
-                    '.chat_tool',
-                    '.chat_menu',
-                    '#chat_preview_container',
-                    '.modals',
-                    '.bookmark_add',
-                    '.container.chat.post'
-                ];
-
-                if (document.getElementById('chk-fetch-all').checked) {
-                    selectorsToRemove.push('.pager');
-                }
-
-                if (document.getElementById('chk-clean-ui').checked) {
-                    selectorsToRemove.push(
-                        '.logs',
-                        '.chara_area',
-                        'nav'
-                    );
-                }
-
-                selectorsToRemove.forEach(sel => {
-                    cloneDoc.querySelectorAll(sel).forEach(el => el.remove());
+                logsToInsert.forEach(log => {
+                    talkList.appendChild(log.cloneNode(true));
                 });
-
-                cloneDoc.querySelectorAll('.mention').forEach(mention => {
-                    const timeEl = mention.querySelector('.chat_time');
-                    if (timeEl) {
-                        mention.innerHTML = `<span class="chat_time gray small">${timeEl.textContent}</span>`;
-                    } else {
-                        mention.innerHTML = '';
-                    }
-                });
-
-                const areaDesc = cloneDoc.querySelector('#area_description');
-                if (areaDesc) {
-                    areaDesc.style.display = 'block';
-                }
-
-                cloneDoc.querySelectorAll('.tab-buttons li').forEach(li => {
-                    li.style.pointerEvents = 'none';
-                    li.style.cursor = 'default';
-                });
-
-                // HTML生成と保存
-                const htmlContent = '<!DOCTYPE html>\n' + cloneDoc.outerHTML;
-                const blob = new Blob([htmlContent], { type: 'text/html' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-
-                const areaName = (document.getElementById('info-area').textContent || 'log').replace(/\s+/g, '_');
-                const dateStr = new Date().toISOString().slice(0, 10);
-
-                a.href = url;
-                a.download = `${areaName}_${dateStr}.html`;
-                a.click();
-
-                URL.revokeObjectURL(url);
-                setStatus(`保存完了 (${fetchedLogs.length} 件)`);
-
-            } catch (e) {
-                console.error(e);
-                setStatus('エラー: ' + e.message, true);
             }
-        }, 50);
+
+            makeLinksAbsolute(cloneDoc);
+            removeLinks(cloneDoc);
+
+            const selectorsToRemove = [
+                'script',
+                'iframe',
+                '.remark_area',
+                '#log_save_panel',
+                '.menu_button',
+                '.header_menu',
+                '.acount_change',
+                '.log_menu',
+                '.chat_tool',
+                '.chat_menu',
+                '#chat_preview_container',
+                '.modals',
+                '.bookmark_add',
+                '.container.chat.post',
+                '.logs',
+                '.chara_area',
+                'nav',
+                '.noticearea',
+                '#custom-toast',
+                '[data-tippy-root]',
+                '.tippy-box',
+                '[data-list="5"]',
+                '[data-list="6"]',
+                '[data-list="7"]',
+                '[data-list="4"]',
+                '.mention_tools',
+            ];
+
+            cloneDoc.querySelectorAll('[data-list="3"][data-zone]:not(.checked)').forEach(el => el.remove());
+
+            if (document.getElementById('chk-fetch-all').checked) {
+                selectorsToRemove.push('.pager');
+            }
+
+            selectorsToRemove.forEach(sel => {
+                cloneDoc.querySelectorAll(sel).forEach(el => el.remove());
+            });
+
+            cloneDoc.querySelectorAll('.mention').forEach(mention => {
+                const timeEl = mention.querySelector('.chat_time');
+                if (timeEl) {
+                    mention.innerHTML = `<span class="chat_time gray small">${timeEl.textContent}</span>`;
+                } else {
+                    mention.innerHTML = '';
+                }
+            });
+
+            const areaDesc = cloneDoc.querySelector('#area_description');
+            if (areaDesc) {
+                areaDesc.style.display = 'block';
+            }
+
+            cloneDoc.querySelectorAll('.tab-buttons li').forEach(li => {
+                li.style.pointerEvents = 'none';
+                li.style.cursor = 'default';
+            });
+
+            const htmlContent = '<!DOCTYPE html>\n' + cloneDoc.outerHTML;
+            const blob = new Blob([htmlContent], { type: 'text/html' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+
+            const areaName = (document.getElementById('info-area').textContent || 'log').replace(/\s+/g, '_');
+            const zoneName = (document.getElementById('info-zone').textContent || '').replace(/\s+/g, '_');
+            const dateStr = getJstDateStr();
+
+            const zonePart = (zoneName && zoneName !== '-') ? `_${zoneName}` : '';
+            a.href = url;
+            a.download = `${areaName}${zonePart}_${dateStr}.html`;
+            a.click();
+
+            URL.revokeObjectURL(url);
+            setStatus(`保存完了 (${fetchCount} 件)`);
+
+        } catch (e) {
+            console.error(e);
+            setStatus('エラー: ' + e.message, true);
+        }
     });
 
 })();
