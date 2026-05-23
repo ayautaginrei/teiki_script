@@ -5,7 +5,7 @@
 // @description  技ごとにセリフ辞書を管理し、ラウンド設定に一括流し込みします
 // @author       ayautaginrei
 // @match        https://wdrb.work/bo5/setup.php*
-// @updateURL
+// @updateURL    https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/BO5/BO5%E6%8A%80%E3%82%BB%E3%83%AA%E3%83%95%E6%B5%81%E3%81%97%E8%BE%BC%E3%81%BF%E3%83%84%E3%83%BC%E3%83%AB.user.js
 // @grant        none
 // ==/UserScript==
 
