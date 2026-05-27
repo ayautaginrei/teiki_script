@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BO5技セリフ流し込みツール
 // @namespace    https://wdrb.work/bo5/
-// @version      1.0
+// @version      1.1
 // @description  技ごとにセリフ辞書を管理し、ラウンド設定に一括流し込みします
 // @author       ayautaginrei
 // @match        https://wdrb.work/bo5/setup.php*
@@ -12,735 +12,433 @@
 (function () {
   'use strict';
 
-  // =====================================================================
-  // ストレージ
-  // =====================================================================
   const STORAGE_KEY = 'bo5_serif_dicts';
+  const W_NAME_KEY  = '__w_name__';
 
-  function loadDicts() {
-    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); }
-    catch { return {}; }
-  }
-  function saveDicts(dicts) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(dicts));
-  }
+  const loadDicts = () => { try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); } catch { return {}; } };
+  const saveDicts = d  => localStorage.setItem(STORAGE_KEY, JSON.stringify(d));
+  const norm      = v  => v == null ? { serif: '', name: '' } : typeof v === 'string' ? { serif: v, name: '' } : { serif: v.serif ?? '', name: v.name ?? '' };
+  const $         = s  => document.querySelector(s);
+  const $id       = id => document.getElementById(id);
+  const isModalOpen = () => $id('bo5-modal-overlay').style.display !== 'none';
+  const esc       = v  => String(v ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  const fire      = el => { if (!el) return; ['input','change'].forEach(t => el.dispatchEvent(new Event(t, { bubbles: true }))); };
+  const showMsg   = (text, err = false) => {
+    const el = $id('bo5-msg');
+    el.textContent = text; el.style.color = err ? '#f38ba8' : '#a6e3a1';
+    clearTimeout(el._t); el._t = setTimeout(() => { el.textContent = ''; }, 5000);
+  };
 
-  // =====================================================================
-  // 公式JSONから辞書エントリへの変換
-  // =====================================================================
-
-  function convertOfficialJson(obj) {
-    // 戻り値: { entries, suggestedName, count, duplicates }
-    // duplicates: 同じ技キーが複数ラウンドで使われ、かつセリフが異なっていたもの
-    const entries    = {};
-    const duplicates = []; // { skillValue, rounds: [{r, serif}] }
-    const seen       = {}; // skillValue -> { r, serif }
-
-    for (let r = 1; r <= 5; r++) {
-      const skillValue = obj[`skill_r${r}`];
-      const serif      = obj[`skill_serif_r${r}`];
-      if (!skillValue || serif === undefined || serif === null) continue;
-
-      if (skillValue in seen) {
-        // 同キーが既にある
-        if (seen[skillValue].serif !== serif) {
-          // セリフが違う → duplicatesに記録
-          const dup = duplicates.find(d => d.skillValue === skillValue);
-          if (dup) {
-            dup.rounds.push({ r, serif });
-          } else {
-            duplicates.push({
-              skillValue,
-              rounds: [{ r: seen[skillValue].r, serif: seen[skillValue].serif }, { r, serif }]
-            });
-          }
-        }
-        // 後ラウンド優先で上書き
-        entries[skillValue] = serif;
-        seen[skillValue] = { r, serif };
-      } else {
-        entries[skillValue] = serif;
-        seen[skillValue] = { r, serif };
-      }
-    }
-
-    const parts = [obj.btst_name, obj.w_id_name].filter(Boolean);
-    const suggestedName = parts.length ? parts.join(' / ') : '公式インポート';
-
-    return { entries, suggestedName, count: Object.keys(entries).length, duplicates };
-  }
-
-  // 公式JSONかどうかの簡易判定（version フィールドと skill_r1 の存在で判断）
-  function isOfficialJson(obj) {
-    return typeof obj === 'object'
-      && !Array.isArray(obj)
-      && ('skill_r1' in obj || 'skill_r2' in obj)
-      && ('skill_serif_r1' in obj || 'skill_serif_r2' in obj);
-  }
-
-  // =====================================================================
-  // ページ情報の収集
-  // =====================================================================
   function collectCurrentSkills() {
     const rounds = [];
     for (let r = 1; r <= 5; r++) {
-      // 非表示のchecked radioが現在の確定選択値
-      const checkedRadio = document.querySelector(
-        `input[type="radio"][name="skill_r${r}"]:checked`
-      );
-      const textarea = document.querySelector(`textarea[name="skill_serif_r${r}"]`);
-      if (!checkedRadio || !textarea) continue;
-      rounds.push({
-        round: r,
-        value: checkedRadio.value,
-        skillName: getSkillDisplayName(r),
-        textarea,
-      });
+      const radio   = $(`input[type="radio"][name="skill_r${r}"]:checked`);
+      const serifTA = $(`textarea[name="skill_serif_r${r}"]`);
+      if (!radio || !serifTA) continue;
+      const el = $(`.skill_prev${r} .skill_name b.large`);
+      rounds.push({ round: r, value: radio.value, skillName: el ? el.textContent.trim() : `R${r}技`, serifTA, nameInput: $(`input[name="skill_r${r}_name"]`) });
     }
     return rounds;
   }
 
-  function getSkillDisplayName(r) {
-    const el = document.querySelector(`.skill_prev${r} .skill_name b.large`);
-    return el ? el.textContent.trim() : `R${r}技`;
+  function convertOfficialJson(obj) {
+    const entries = {}, duplicates = [], seen = {};
+    for (let r = 1; r <= 5; r++) {
+      const sv = obj[`skill_r${r}`], serif = obj[`skill_serif_r${r}`] ?? '', name = obj[`skill_r${r}_name`] ?? '';
+      if (!sv) continue;
+      if (sv in seen && seen[sv].serif !== serif) {
+        const dup = duplicates.find(d => d.skillValue === sv);
+        if (dup) dup.rounds.push({ r, serif, name });
+        else duplicates.push({ skillValue: sv, rounds: [{ r: seen[sv].r, serif: seen[sv].serif, name: seen[sv].name }, { r, serif, name }] });
+      }
+      entries[sv] = { serif, name }; seen[sv] = { r, serif, name };
+    }
+    const parts = [obj.btst_name, obj.w_id_name].filter(Boolean);
+    return { entries, wName: obj.w_name ?? '', suggestedName: parts.join(' / ') || '公式インポート', count: Object.keys(entries).length, duplicates };
   }
 
-  // =====================================================================
-  // 辞書操作
-  // =====================================================================
+  const isOfficialJson = obj =>
+    typeof obj === 'object' && !Array.isArray(obj) &&
+    ('skill_r1' in obj || 'skill_r2' in obj) &&
+    ('skill_serif_r1' in obj || 'skill_serif_r2' in obj);
 
-  // 現在のフォームのセリフを辞書に読み込む（上書きマージ）
-  function readCurrentSerifIntoDict(dictName) {
+  function readCurrentIntoDict(dictName) {
     const dicts = loadDicts();
     if (!dicts[dictName]) dicts[dictName] = {};
+    const d = dicts[dictName], wInput = $('input[name="w_name"]');
+    if (wInput) d[W_NAME_KEY] = wInput.value;
     const rounds = collectCurrentSkills();
-    rounds.forEach(({ value, textarea }) => {
-      dicts[dictName][value] = textarea.value;
+    rounds.forEach(({ value, serifTA, nameInput }) => {
+      d[value] = { serif: serifTA.value, name: nameInput ? nameInput.value : norm(d[value]).name };
     });
     saveDicts(dicts);
     return rounds.length;
   }
 
-  // 辞書を全ラウンドに流し込む
   function applyDictToRounds(dictName) {
-    const dict = (loadDicts()[dictName]) || {};
-    const rounds = collectCurrentSkills();
-    let applied = 0;
-    const missing = [];
-    rounds.forEach(({ value, textarea, skillName }) => {
-      if (value in dict) {
-        textarea.value = dict[value];
-        textarea.dispatchEvent(new Event('input',  { bubbles: true }));
-        textarea.dispatchEvent(new Event('change', { bubbles: true }));
+    const d = loadDicts()[dictName] || {}, rounds = collectCurrentSkills();
+    let applied = 0; const missing = [];
+    const wInput = $('input[name="w_name"]');
+    if (wInput && W_NAME_KEY in d) { wInput.value = d[W_NAME_KEY]; fire(wInput); }
+    rounds.forEach(({ value, serifTA, nameInput, skillName }) => {
+      if (value in d) {
+        const e = norm(d[value]);
+        serifTA.value = e.serif; fire(serifTA);
+        if (nameInput) { nameInput.value = e.name; fire(nameInput); }
         applied++;
-      } else {
-        missing.push(skillName || value);
-      }
+      } else { missing.push(skillName || value); }
     });
     return { applied, missing };
   }
 
-  // =====================================================================
-  // エディタ管理（モジュール化してどこからでも開き直せる）
-  // =====================================================================
-  let editorDictName = null; // 現在エディタが開いている辞書名
+  let editorDictName = null;
 
   function openEditor(dictName) {
     editorDictName = dictName;
-    renderEditorRows(dictName);
-    document.getElementById('bo5-serif-editor').style.display = 'block';
-    document.getElementById('bo5-editor-title').textContent = `辞書エディタ：${dictName}`;
+    $id('bo5-modal-title').textContent = `辞書エディタ：${dictName}`;
+    renderModalRows(dictName);
+    $id('bo5-modal-overlay').style.display = 'flex';
   }
+  const closeModal = () => { $id('bo5-modal-overlay').style.display = 'none'; };
 
-  function renderEditorRows(dictName) {
-    const dict = (loadDicts()[dictName]) || {};
-    const rounds = collectCurrentSkills();
-    const rowsDiv = document.getElementById('bo5-editor-rows');
+  function renderModalRows(dictName) {
+    const d = loadDicts()[dictName] || {}, rounds = collectCurrentSkills();
+    const wrap = $id('bo5-modal-rows');
+    wrap.innerHTML = `
+      <div class="bo5m-section">
+        <div class="bo5m-section-hdr" style="color:#f9e2af;">⚔ 武器の銘</div>
+        <div class="bo5m-field-row">
+          <label class="bo5m-label">銘</label>
+          <input type="text" data-gkey="${W_NAME_KEY}" maxlength="8" placeholder="8文字以内" value="${esc(d[W_NAME_KEY] ?? '')}" class="bo5m-input">
+        </div>
+      </div>
+      <div class="bo5m-section">
+        <div class="bo5m-section-hdr" style="color:#a6e3a1;">⚡ 技セリフ・技名</div>
+        <div id="bo5m-skill-list"></div>
+      </div>`;
 
-    // 現在ページの技キー ＋ 辞書に既にあるキー（別武器分）をすべて表示
     const pageKeys = rounds.map(r => r.value);
-    const dictKeys = Object.keys(dict);
-    // pageKeysを先頭に、辞書にあって現在ページにない追加キーを後ろに
-    const allKeys = [...pageKeys, ...dictKeys.filter(k => !pageKeys.includes(k))];
+    const allKeys  = [...pageKeys, ...Object.keys(d).filter(k => k !== W_NAME_KEY && !pageKeys.includes(k))];
+    const list     = $id('bo5m-skill-list');
 
-    rowsDiv.innerHTML = '';
-
-    if (allKeys.length === 0) {
-      rowsDiv.innerHTML = '<p style="color:#585b70;font-size:11px;">技がありません。まず「現在のセリフを読み込む」か直接ページで技を選択してください。</p>';
-      return;
-    }
-
-    allKeys.forEach(key => {
-      const roundInfo  = rounds.find(r => r.value === key);
-      const skillLabel = roundInfo ? roundInfo.skillName : key;
-      const isCurrentPage = !!roundInfo;
-
-      const row = document.createElement('div');
-      row.className = 'bo5-editor-row';
-      row.innerHTML = `
-        <div style="display:flex;justify-content:space-between;align-items:baseline;">
-          <label>${esc(skillLabel)}</label>
-          <small style="color:${isCurrentPage ? '#89b4fa' : '#585b70'};">
-            ${isCurrentPage ? `R${roundInfo.round} ` : ''}${esc(key)}
-          </small>
-        </div>
-        <textarea data-key="${esc(key)}" rows="2">${esc(dict[key] || '')}</textarea>
-        <button class="bo5-editor-del-row" data-key="${esc(key)}" title="このキーを辞書から削除">✕ 削除</button>
-      `;
-      rowsDiv.appendChild(row);
-    });
-
-    // 削除ボタン
-    rowsDiv.querySelectorAll('.bo5-editor-del-row').forEach(btn => {
-      btn.addEventListener('click', () => {
-        if (!confirm(`「${btn.dataset.key}」を辞書から削除しますか？`)) return;
-        const dicts = loadDicts();
-        delete dicts[dictName][btn.dataset.key];
-        saveDicts(dicts);
-        renderEditorRows(dictName); // 再描画
-        showMsg(`${btn.dataset.key} を削除しました`);
-        refreshPreview();
+    if (!allKeys.length) {
+      list.innerHTML = '<p style="color:#585b70;font-size:12px;margin:8px 0;">技がありません。「現在の内容を辞書に読み込む」か技を選択してください。</p>';
+    } else {
+      allKeys.forEach(key => {
+        const ri       = rounds.find(r => r.value === key);
+        const label    = ri ? ri.skillName : key;
+        const roundNums = rounds.filter(r => r.value === key).map(r => `R${r.round}`).join('/');
+        const entry    = norm(d[key]);
+        const row      = document.createElement('div');
+        row.className  = 'bo5m-skill-row';
+        row.innerHTML  = `
+          <div class="bo5m-skill-hdr">
+            <span class="bo5m-skill-name">${esc(label)}</span>
+            <span class="bo5m-skill-key" style="color:${ri ? '#89b4fa' : '#585b70'};">${roundNums ? roundNums + '　' : ''}${esc(key)}</span>
+            <button class="bo5m-del-btn" data-key="${esc(key)}" title="このキーを削除">✕</button>
+          </div>
+          <div class="bo5m-field-row">
+            <label class="bo5m-label">技名</label>
+            <input type="text" data-key="${esc(key)}" data-field="name" maxlength="8" placeholder="8文字以内" value="${esc(entry.name)}" class="bo5m-input bo5m-name-input">
+          </div>
+          <div class="bo5m-field-row">
+            <label class="bo5m-label">セリフ</label>
+            <textarea data-key="${esc(key)}" data-field="serif" class="bo5m-textarea" rows="3">${esc(entry.serif)}</textarea>
+          </div>`;
+        list.appendChild(row);
       });
-    });
+      list.querySelectorAll('.bo5m-del-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          if (!confirm(`「${btn.dataset.key}」を辞書から削除しますか？`)) return;
+          const dicts = loadDicts(); delete dicts[dictName][btn.dataset.key];
+          saveDicts(dicts); renderModalRows(dictName); refreshPreview(); showMsg(`${btn.dataset.key} を削除しました`);
+        });
+      });
+    }
   }
 
-  // エディタの「保存」処理（ローカルストレージから最新を読んでマージ）
-  function saveEditor() {
+  function saveModal() {
     if (!editorDictName) return;
-    const dicts = loadDicts();
-    if (!dicts[editorDictName]) dicts[editorDictName] = {};
-
-    const rowsDiv = document.getElementById('bo5-editor-rows');
-    rowsDiv.querySelectorAll('textarea[data-key]').forEach(ta => {
-      dicts[editorDictName][ta.dataset.key] = ta.value;
+    const dicts = loadDicts(); if (!dicts[editorDictName]) dicts[editorDictName] = {};
+    const d = dicts[editorDictName], wrap = $id('bo5-modal-rows');
+    wrap.querySelectorAll('[data-gkey]').forEach(el => { d[el.dataset.gkey] = el.value; });
+    const keyMap = {};
+    wrap.querySelectorAll('[data-key][data-field]').forEach(el => {
+      const { key, field } = el.dataset;
+      if (!keyMap[key]) keyMap[key] = norm(d[key]);
+      keyMap[key][field] = el.value;
     });
-    saveDicts(dicts);
-    refreshPreview();
-    showMsg(`辞書「${editorDictName}」を保存しました`);
+    Object.assign(d, keyMap);
+    saveDicts(dicts); refreshPreview(); showMsg(`辞書「${editorDictName}」を保存しました`);
   }
 
-  // =====================================================================
-  // UI 構築
-  // =====================================================================
+  function refreshPreview() {
+    const area = $id('bo5-preview-area'); if (!area) return;
+    const d = loadDicts()[$id('bo5-dict-select').value] || {}, rounds = collectCurrentSkills();
+    const rows = [];
+    if (d[W_NAME_KEY]) rows.push(`<div class="bo5-preview-row"><span class="bo5-pv-round" style="color:#f9e2af;">銘</span><span style="color:#f9e2af;flex:1;">${esc(d[W_NAME_KEY])}</span></div>`);
+    if (!rounds.length) {
+      rows.push('<span style="color:#585b70;font-size:11px;">（技設定が見つかりません）</span>');
+    } else {
+      rounds.forEach(({ round, value, skillName }) => {
+        const entry = d[value] ? norm(d[value]) : null;
+        const np    = entry?.name  ? `<b style="color:#cba6f7;">[${esc(entry.name)}]</b> ` : '';
+        const sp    = entry?.serif ? esc(entry.serif).substring(0, 45) + (entry.serif.length > 45 ? '…' : '') : '<span style="color:#f38ba8;font-style:italic;">（未設定）</span>';
+        rows.push(`<div class="bo5-preview-row"><span class="bo5-pv-round">R${round}</span><span class="bo5-pv-skill">${esc(skillName)}<br><small style="color:#585b70;">${esc(value)}</small></span><span class="bo5-pv-serif">${np}${sp}</span></div>`);
+      });
+    }
+    area.innerHTML = rows.join('');
+  }
+
+  function refreshDictSelect(keepValue) {
+    const sel = $id('bo5-dict-select'), prev = keepValue ?? sel.value, names = Object.keys(loadDicts());
+    sel.innerHTML = names.length ? names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('') : '<option value="">（辞書なし）</option>';
+    if (names.includes(prev)) sel.value = prev;
+  }
+
   function buildUI() {
-    const panel = document.createElement('div');
-    panel.id = 'bo5-serif-panel';
-    panel.innerHTML = `
-      <div id="bo5-serif-header">
-        📝 技セリフ管理
-        <button id="bo5-serif-toggle" title="折りたたむ">▼</button>
+    document.body.insertAdjacentHTML('beforeend', `
+      <div id="bo5-serif-panel">
+        <div id="bo5-serif-header">📝 技セリフ管理<button id="bo5-serif-toggle" title="折りたたむ">▼</button></div>
+        <div id="bo5-serif-body">
+          <div class="bo5-section">
+            <label>辞書を選択</label>
+            <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;">
+              <select id="bo5-dict-select" style="flex:1;min-width:0;"></select>
+              <button id="bo5-dict-new" title="新しい辞書を作成">＋新規</button>
+              <button id="bo5-dict-rename" title="辞書名を変更">✏</button>
+              <button id="bo5-dict-delete" title="辞書を削除" style="color:#f38ba8;">🗑</button>
+            </div>
+          </div>
+          <div class="bo5-section bo5-preview" id="bo5-preview-area"></div>
+          <div class="bo5-section" style="display:flex;flex-direction:column;gap:5px;">
+            <button id="bo5-btn-apply" class="bo5-btn-primary">▶ 選択辞書を流し込む</button>
+            <button id="bo5-btn-read">↑ 現在の内容を辞書に読み込む</button>
+            <button id="bo5-btn-edit">✎ 辞書エディタを開く</button>
+            <div style="display:flex;gap:5px;">
+              <button id="bo5-btn-export" style="flex:1;">⬇ Export JSON</button>
+              <button id="bo5-btn-import-trigger" style="flex:1;">⬆ Import JSON</button>
+              <input type="file" id="bo5-btn-import" accept=".json,application/json" style="display:none;">
+            </div>
+            <button id="bo5-btn-import-official-trigger" style="background:#2d3b2d;border-color:#4a7c4a;color:#a6e3a1;">🎮 公式JSONから辞書を生成</button>
+            <input type="file" id="bo5-btn-import-official" accept=".json,application/json" style="display:none;">
+          </div>
+          <div id="bo5-msg" style="margin-top:5px;font-size:11px;min-height:16px;"></div>
+        </div>
       </div>
-      <div id="bo5-serif-body">
-
-        <div class="bo5-section">
-          <label>辞書を選択<small style="color:#585b70;margin-left:6px;">（ダブルクリックでエディタを開く）</small></label>
-          <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;">
-            <select id="bo5-dict-select" style="flex:1;min-width:0;"></select>
-            <button id="bo5-dict-new"    title="新しい辞書を作成">＋新規</button>
-            <button id="bo5-dict-rename" title="辞書名を変更">✏</button>
-            <button id="bo5-dict-delete" title="辞書を削除" style="color:#f38ba8;">🗑</button>
+      <div id="bo5-modal-overlay">
+        <div id="bo5-modal">
+          <div id="bo5-modal-header">
+            <span id="bo5-modal-title"></span>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <button id="bo5-modal-addrow" title="技キーを手動追加">＋行追加</button>
+              <button id="bo5-modal-save" class="bo5-btn-primary">保存</button>
+              <button id="bo5-modal-close" title="閉じる">✕</button>
+            </div>
           </div>
+          <div id="bo5-modal-rows"></div>
         </div>
-
-        <!-- プレビュー -->
-        <div class="bo5-section bo5-preview" id="bo5-preview-area"></div>
-
-        <!-- アクションボタン群 -->
-        <div class="bo5-section" style="display:flex;flex-direction:column;gap:5px;">
-          <button id="bo5-btn-apply" class="bo5-btn-primary">▶ 選択辞書を流し込む</button>
-          <button id="bo5-btn-read">↑ 現在のセリフを辞書に読み込む</button>
-          <button id="bo5-btn-edit">✎ 辞書エディタを開く</button>
-          <div style="display:flex;gap:5px;">
-            <button id="bo5-btn-export" style="flex:1;">⬇ Export JSON</button>
-            <button id="bo5-btn-import-trigger" style="flex:1;">⬆ Import JSON</button>
-            <input type="file" id="bo5-btn-import" accept=".json,application/json" style="display:none;">
-          </div>
-          <button id="bo5-btn-import-official-trigger" style="background:#2d3b2d;border-color:#4a7c4a;color:#a6e3a1;" 公式JSONから辞書を生成</button>
-          <input type="file" id="bo5-btn-import-official" accept=".json,application/json" style="display:none;">
-        </div>
-
-        <!-- インラインエディタ -->
-        <div id="bo5-serif-editor" class="bo5-section" style="display:none;">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;">
-            <b id="bo5-editor-title" style="font-size:12px;"></b>
-            <button id="bo5-editor-add-row" title="空のキーを追加">＋行追加</button>
-          </div>
-          <div id="bo5-editor-rows"></div>
-          <div style="display:flex;gap:5px;margin-top:6px;">
-            <button id="bo5-editor-save"   class="bo5-btn-primary" style="flex:1;">保存</button>
-            <button id="bo5-editor-close"  style="flex:1;">閉じる</button>
-          </div>
-        </div>
-
-        <div id="bo5-msg" style="margin-top:5px;font-size:11px;min-height:16px;"></div>
-      </div>
-    `;
-    document.body.appendChild(panel);
+      </div>`);
     injectStyles();
     bindEvents();
     refreshDictSelect();
     refreshPreview();
   }
 
-  // =====================================================================
-  // セレクト・プレビュー更新
-  // =====================================================================
-  function refreshDictSelect(keepValue) {
-    const sel = document.getElementById('bo5-dict-select');
-    const prev = keepValue !== undefined ? keepValue : sel.value;
-    const dicts = loadDicts();
-    const names = Object.keys(dicts);
-    sel.innerHTML = names.length
-      ? names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('')
-      : '<option value="">（辞書なし）</option>';
-    if (names.includes(prev)) sel.value = prev;
-  }
-
-  function refreshPreview() {
-    const area = document.getElementById('bo5-preview-area');
-    if (!area) return;
-    const dictName = document.getElementById('bo5-dict-select').value;
-    const dict = (loadDicts()[dictName]) || {};
-    const rounds = collectCurrentSkills();
-
-    if (!rounds.length) {
-      area.innerHTML = '<span style="color:#585b70;font-size:11px;">（技設定が見つかりません）</span>';
-      return;
-    }
-    area.innerHTML = rounds.map(({ round, value, skillName }) => {
-      const serif  = dict[value];
-      const has    = serif !== undefined && serif !== '';
-      const preview = has
-        ? esc(serif).substring(0, 55) + (serif.length > 55 ? '…' : '')
-        : '（未設定）';
-      return `<div class="bo5-preview-row">
-        <span class="bo5-pv-round">R${round}</span>
-        <span class="bo5-pv-skill">${esc(skillName)}<br><small style="color:#585b70;">${esc(value)}</small></span>
-        <span class="bo5-pv-serif${has ? '' : ' missing'}">${preview}</span>
-      </div>`;
-    }).join('');
-  }
-
-  // =====================================================================
-  // イベントバインド
-  // =====================================================================
   function bindEvents() {
-    // 折りたたみ
     let collapsed = false;
-    document.getElementById('bo5-serif-toggle').addEventListener('click', () => {
+    $id('bo5-serif-toggle').addEventListener('click', () => {
       collapsed = !collapsed;
-      document.getElementById('bo5-serif-body').style.display = collapsed ? 'none' : '';
-      document.getElementById('bo5-serif-toggle').textContent = collapsed ? '▲' : '▼';
+      $id('bo5-serif-body').style.display = collapsed ? 'none' : '';
+      $id('bo5-serif-toggle').textContent  = collapsed ? '▲' : '▼';
     });
 
-    // ドラッグ移動
-    const panel  = document.getElementById('bo5-serif-panel');
-    const header = document.getElementById('bo5-serif-header');
+    const panel = $id('bo5-serif-panel'), hdr = $id('bo5-serif-header');
     let drag = false, sx, sy, or, ob;
-    header.addEventListener('mousedown', e => {
+    hdr.addEventListener('mousedown', e => {
       if (e.target.tagName === 'BUTTON') return;
       drag = true; sx = e.clientX; sy = e.clientY;
-      const r = panel.getBoundingClientRect();
-      or = window.innerWidth  - r.right;
-      ob = window.innerHeight - r.bottom;
+      const r = panel.getBoundingClientRect(); or = window.innerWidth - r.right; ob = window.innerHeight - r.bottom;
     });
     document.addEventListener('mousemove', e => {
       if (!drag) return;
-      panel.style.right  = (or - (e.clientX - sx)) + 'px';
-      panel.style.bottom = (ob - (e.clientY - sy)) + 'px';
+      panel.style.right = (or - (e.clientX - sx)) + 'px'; panel.style.bottom = (ob - (e.clientY - sy)) + 'px';
       panel.style.left = 'auto'; panel.style.top = 'auto';
     });
     document.addEventListener('mouseup', () => { drag = false; });
 
-    // セレクト変更
-    document.getElementById('bo5-dict-select').addEventListener('change', () => {
-      refreshPreview();
-      // エディタが開いていれば切り替え
-      if (document.getElementById('bo5-serif-editor').style.display !== 'none') {
-        openEditor(document.getElementById('bo5-dict-select').value);
-      }
-    });
+    $id('bo5-dict-select').addEventListener('change', refreshPreview);
 
-    // ダブルクリックでエディタ
-    document.getElementById('bo5-dict-select').addEventListener('dblclick', () => {
-      const name = document.getElementById('bo5-dict-select').value;
-      if (name) openEditor(name);
-    });
-
-    // 新規
-    document.getElementById('bo5-dict-new').addEventListener('click', () => {
-      const name = prompt('新しい辞書の名前：\n（例: グラディウス攻め・サイ用 など）');
-      if (!name?.trim()) return;
+    $id('bo5-dict-new').addEventListener('click', () => {
+      const name = prompt('新しい辞書の名前：'); if (!name?.trim()) return;
       const dicts = loadDicts();
       if (dicts[name.trim()]) { showMsg('同名の辞書が既にあります', true); return; }
-      dicts[name.trim()] = {};
-      saveDicts(dicts);
-      refreshDictSelect(name.trim());
-      document.getElementById('bo5-dict-select').value = name.trim();
-      refreshPreview();
-      showMsg(`辞書「${name.trim()}」を作成しました`);
-      openEditor(name.trim());
+      dicts[name.trim()] = {}; saveDicts(dicts);
+      refreshDictSelect(name.trim()); $id('bo5-dict-select').value = name.trim(); refreshPreview();
+      showMsg(`辞書「${name.trim()}」を作成しました`); openEditor(name.trim());
     });
 
-    // リネーム
-    document.getElementById('bo5-dict-rename').addEventListener('click', () => {
-      const old = document.getElementById('bo5-dict-select').value;
-      if (!old) return;
-      const newName = prompt(`辞書「${old}」の新しい名前：`, old);
-      if (!newName?.trim() || newName.trim() === old) return;
+    $id('bo5-dict-rename').addEventListener('click', () => {
+      const old = $id('bo5-dict-select').value; if (!old) return;
+      const n = prompt(`辞書「${old}」の新しい名前：`, old);
+      if (!n?.trim() || n.trim() === old) return;
       const dicts = loadDicts();
-      if (dicts[newName.trim()]) { showMsg('同名の辞書が既にあります', true); return; }
-      dicts[newName.trim()] = dicts[old];
-      delete dicts[old];
-      saveDicts(dicts);
-      refreshDictSelect(newName.trim());
-      document.getElementById('bo5-dict-select').value = newName.trim();
-      if (editorDictName === old) openEditor(newName.trim());
-      showMsg(`「${old}」→「${newName.trim()}」に変更しました`);
+      if (dicts[n.trim()]) { showMsg('同名の辞書が既にあります', true); return; }
+      dicts[n.trim()] = dicts[old]; delete dicts[old]; saveDicts(dicts);
+      refreshDictSelect(n.trim()); $id('bo5-dict-select').value = n.trim();
+      if (editorDictName === old) { editorDictName = n.trim(); $id('bo5-modal-title').textContent = `辞書エディタ：${n.trim()}`; }
+      showMsg(`「${old}」→「${n.trim()}」に変更しました`);
     });
 
-    // 削除
-    document.getElementById('bo5-dict-delete').addEventListener('click', () => {
-      const name = document.getElementById('bo5-dict-select').value;
-      if (!name) return;
+    $id('bo5-dict-delete').addEventListener('click', () => {
+      const name = $id('bo5-dict-select').value; if (!name) return;
       if (!confirm(`辞書「${name}」を削除しますか？`)) return;
-      const dicts = loadDicts();
-      delete dicts[name];
-      saveDicts(dicts);
-      if (editorDictName === name) {
-        document.getElementById('bo5-serif-editor').style.display = 'none';
-        editorDictName = null;
-      }
-      refreshDictSelect('');
-      refreshPreview();
-      showMsg(`辞書「${name}」を削除しました`);
+      const dicts = loadDicts(); delete dicts[name]; saveDicts(dicts);
+      if (editorDictName === name) { closeModal(); editorDictName = null; }
+      refreshDictSelect(''); refreshPreview(); showMsg(`辞書「${name}」を削除しました`);
     });
 
-    // ▶ 流し込む
-    document.getElementById('bo5-btn-apply').addEventListener('click', () => {
-      const name = document.getElementById('bo5-dict-select').value;
+    $id('bo5-btn-apply').addEventListener('click', () => {
+      const name = $id('bo5-dict-select').value;
       if (!name) { showMsg('辞書が選択されていません', true); return; }
       const { applied, missing } = applyDictToRounds(name);
-      showMsg(missing.length
-        ? `${applied}件流し込み完了。辞書未登録: ${missing.join('、')}`
-        : `全${applied}ラウンドへの流し込み完了！`);
+      showMsg(missing.length ? `${applied}件流し込み完了。辞書未登録: ${missing.join('、')}` : `全${applied}ラウンドへの流し込み完了！`);
       refreshPreview();
     });
 
-    // ↑ 現在のセリフを読み込む
-    document.getElementById('bo5-btn-read').addEventListener('click', () => {
-      const name = document.getElementById('bo5-dict-select').value;
+    $id('bo5-btn-read').addEventListener('click', () => {
+      const name = $id('bo5-dict-select').value;
       if (!name) { showMsg('先に辞書を選択または作成してください', true); return; }
-      const count = readCurrentSerifIntoDict(name);
-      showMsg(`${count}件を辞書「${name}」に読み込みました`);
+      showMsg(`${readCurrentIntoDict(name)}件の技セリフを辞書「${name}」に読み込みました`);
       refreshPreview();
-      // エディタが開いていれば内容を再描画して即反映
-      if (document.getElementById('bo5-serif-editor').style.display !== 'none'
-          && editorDictName === name) {
-        renderEditorRows(name);
-      }
+      if (isModalOpen() && editorDictName === name) renderModalRows(name);
     });
 
-    // ✎ エディタを開く
-    document.getElementById('bo5-btn-edit').addEventListener('click', () => {
-      const name = document.getElementById('bo5-dict-select').value;
+    $id('bo5-btn-edit').addEventListener('click', () => {
+      const name = $id('bo5-dict-select').value;
       if (!name) { showMsg('辞書が選択されていません', true); return; }
-      const editor = document.getElementById('bo5-serif-editor');
-      if (editor.style.display !== 'none' && editorDictName === name) {
-        editor.style.display = 'none'; // トグル：もう一度押したら閉じる
-      } else {
-        openEditor(name);
-      }
+      openEditor(name);
     });
 
-    // エディタ：行追加
-    document.getElementById('bo5-editor-add-row').addEventListener('click', () => {
+    $id('bo5-modal-overlay').addEventListener('click', e => { if (e.target === $id('bo5-modal-overlay')) closeModal(); });
+    $id('bo5-modal-close').addEventListener('click', closeModal);
+    $id('bo5-modal-save').addEventListener('click', () => { saveModal(); closeModal(); });
+
+    $id('bo5-modal-addrow').addEventListener('click', () => {
       if (!editorDictName) return;
-      const key = prompt('追加するキー名を入力してください\n（例: gladius_01, dagger_02 など）');
-      if (!key?.trim()) return;
-      const dicts = loadDicts();
-      if (!dicts[editorDictName]) dicts[editorDictName] = {};
-      if (!(key.trim() in dicts[editorDictName])) {
-        dicts[editorDictName][key.trim()] = '';
-        saveDicts(dicts);
-      }
-      renderEditorRows(editorDictName);
+      const key = prompt('追加する技キー名を入力してください\n（例: gradius_01, dagger_02 など）'); if (!key?.trim()) return;
+      const dicts = loadDicts(); if (!dicts[editorDictName]) dicts[editorDictName] = {};
+      if (!(key.trim() in dicts[editorDictName])) { dicts[editorDictName][key.trim()] = { serif: '', name: '' }; saveDicts(dicts); }
+      renderModalRows(editorDictName);
     });
 
-    // エディタ：保存
-    // localStorageの最新値を読み込んでからtextareaの値でマージ保存する
-    document.getElementById('bo5-editor-save').addEventListener('click', () => {
-      saveEditor();
-    });
-
-    // エディタ：閉じる
-    document.getElementById('bo5-editor-close').addEventListener('click', () => {
-      document.getElementById('bo5-serif-editor').style.display = 'none';
-    });
-
-    // ⬇ Export
-    document.getElementById('bo5-btn-export').addEventListener('click', () => {
-      const name = document.getElementById('bo5-dict-select').value;
+    $id('bo5-btn-export').addEventListener('click', () => {
+      const name = $id('bo5-dict-select').value;
       if (!name) { showMsg('辞書が選択されていません', true); return; }
-      const dicts = loadDicts();
-      const blob = new Blob(
-        [JSON.stringify({ [name]: dicts[name] || {} }, null, 2)],
-        { type: 'application/json' }
-      );
       const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = `bo5_serif_${name.replace(/[^\w\u3000-\u9fff]/g, '_')}.json`;
-      a.click();
+      a.href = URL.createObjectURL(new Blob([JSON.stringify({ [name]: loadDicts()[name] || {} }, null, 2)], { type: 'application/json' }));
+      a.download = `bo5_serif_${name.replace(/[^\w\u3000-\u9fff]/g, '_')}.json`; a.click();
       showMsg(`「${name}」をエクスポートしました`);
     });
 
-    // ⬆ Import
-    document.getElementById('bo5-btn-import-trigger').addEventListener('click', () => {
-      document.getElementById('bo5-btn-import').click();
-    });
-    document.getElementById('bo5-btn-import').addEventListener('change', function () {
-      const file = this.files[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = e => {
-        try {
-          const imported = JSON.parse(e.target.result);
-          if (typeof imported !== 'object' || Array.isArray(imported)) throw new Error('形式が不正です');
-          const dicts = loadDicts();
-          let count = 0;
-          for (const [name, dict] of Object.entries(imported)) {
-            if (typeof dict !== 'object' || Array.isArray(dict)) continue;
-            if (dicts[name]) {
-              // 既存辞書へのマージ or 上書きを選択
-              const choice = confirm(
-                `辞書「${name}」は既に存在します。\n\n` +
-                `OK → 既存辞書にマージ（同キーは上書き）\n` +
-                `キャンセル → スキップ`
-              );
-              if (!choice) continue;
-              Object.assign(dicts[name], dict);
-            } else {
-              dicts[name] = dict;
-            }
-            count++;
-          }
-          saveDicts(dicts);
-          const currentName = document.getElementById('bo5-dict-select').value;
-          refreshDictSelect(currentName);
-          refreshPreview();
-          if (editorDictName && document.getElementById('bo5-serif-editor').style.display !== 'none') {
-            renderEditorRows(editorDictName);
-          }
-          showMsg(`${count}件の辞書をインポートしました`);
-        } catch (err) {
-          showMsg('JSONの解析に失敗しました: ' + err.message, true);
-        }
-        this.value = '';
-      };
-      reader.readAsText(file);
-    });
+    const makeFileHandler = (triggerId, inputId, handler) => {
+      $id(triggerId).addEventListener('click', () => $id(inputId).click());
+      $id(inputId).addEventListener('change', function () {
+        const file = this.files[0]; if (!file) return;
+        const reader = new FileReader();
+        reader.onload = e => { try { handler(JSON.parse(e.target.result)); } catch (err) { showMsg('JSONの解析に失敗しました: ' + err.message, true); } };
+        reader.readAsText(file); this.value = '';
+      });
+    };
 
-    // 🎮 公式JSONから辞書を生成
-    document.getElementById('bo5-btn-import-official-trigger').addEventListener('click', () => {
-      document.getElementById('bo5-btn-import-official').click();
-    });
-    document.getElementById('bo5-btn-import-official').addEventListener('change', function () {
-      const file = this.files[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = e => {
-        try {
-          const obj = JSON.parse(e.target.result);
-
-          // 公式JSONかどうか判定
-          if (!isOfficialJson(obj)) {
-            showMsg('公式形式のJSONではありません（skill_r1/skill_serif_r1 が見つかりません）', true);
-            return;
-          }
-
-          const { entries, suggestedName, count } = convertOfficialJson(obj);
-
-          if (count === 0) {
-            showMsg('変換できる技セリフが見つかりませんでした', true);
-            return;
-          }
-
-          // 辞書名を確認・編集させる
-          const dictName = prompt(
-            `公式JSONから ${count} 件の技セリフを読み取りました。
-` +
-            `登録する辞書名を入力してください：`,
-            suggestedName
-          );
-          if (!dictName?.trim()) return;
-
-          const dicts = loadDicts();
-          if (dicts[dictName.trim()]) {
-            const choice = confirm(
-              `辞書「${dictName.trim()}」は既に存在します。
-
-` +
-              `OK → マージ（同キーは上書き）
-` +
-              `キャンセル → スキップ`
-            );
-            if (!choice) return;
-            Object.assign(dicts[dictName.trim()], entries);
-          } else {
-            dicts[dictName.trim()] = entries;
-          }
-          saveDicts(dicts);
-          refreshDictSelect(dictName.trim());
-          document.getElementById('bo5-dict-select').value = dictName.trim();
-          refreshPreview();
-          if (editorDictName && document.getElementById('bo5-serif-editor').style.display !== 'none') {
-            renderEditorRows(editorDictName);
-          }
-          // 同一技キーで異なるセリフが複数ラウンドにある場合は警告
-          if (duplicates.length > 0) {
-            const warn = duplicates.map(d => {
-              const lines = d.rounds.map(rr => `R${rr.r}: ${rr.serif.substring(0, 20)}…`).join('\n  ');
-              return `【${d.skillValue}】\n  ${lines}`;
-            }).join('\n');
-            alert(
-              `⚠ 以下の技は複数ラウンドで異なるセリフが設定されていました。\n` +
-              `最後のラウンドのセリフを辞書に登録しています。\n` +
-              `必要に応じてエディタで修正してください。\n\n${warn}`
-            );
-          }
-          showMsg(`辞書「${dictName.trim()}」に ${count} 件登録しました`);
-
-        } catch (err) {
-          showMsg('JSONの解析に失敗しました: ' + err.message, true);
-        }
-        this.value = '';
-      };
-      reader.readAsText(file);
-    });
-
-    // ラジオ変更時にプレビュー更新
-    document.addEventListener('change', e => {
-      if (e.target.matches('input[type="radio"][name^="skill_r"]')) {
-        setTimeout(() => {
-          refreshPreview();
-          if (document.getElementById('bo5-serif-editor').style.display !== 'none' && editorDictName) {
-            renderEditorRows(editorDictName);
-          }
-        }, 120);
+    makeFileHandler('bo5-btn-import-trigger', 'bo5-btn-import', imported => {
+      if (typeof imported !== 'object' || Array.isArray(imported)) throw new Error('形式が不正です');
+      const dicts = loadDicts(); let count = 0;
+      for (const [name, dict] of Object.entries(imported)) {
+        if (typeof dict !== 'object' || Array.isArray(dict)) continue;
+        if (dicts[name] && !confirm(`辞書「${name}」は既に存在します。\nOK → マージ　キャンセル → スキップ`)) continue;
+        dicts[name] ? Object.assign(dicts[name], dict) : (dicts[name] = dict); count++;
       }
+      saveDicts(dicts); refreshDictSelect($id('bo5-dict-select').value); refreshPreview();
+      showMsg(`${count}件の辞書をインポートしました`);
+    });
+
+    makeFileHandler('bo5-btn-import-official-trigger', 'bo5-btn-import-official', obj => {
+      if (!isOfficialJson(obj)) { showMsg('公式形式のJSONではありません', true); return; }
+      const { entries, wName, suggestedName, count, duplicates } = convertOfficialJson(obj);
+      if (!count) { showMsg('変換できる技セリフが見つかりませんでした', true); return; }
+      const dictName = prompt(`公式JSONから ${count} 件の技セリフを読み取りました。\n登録する辞書名：`, suggestedName);
+      if (!dictName?.trim()) return;
+      const dicts = loadDicts(), dn = dictName.trim();
+      if (dicts[dn]) {
+        if (!confirm(`辞書「${dn}」は既に存在します。\nOK → マージ　キャンセル → スキップ`)) return;
+        if (wName) dicts[dn][W_NAME_KEY] = wName; Object.assign(dicts[dn], entries);
+      } else { dicts[dn] = { [W_NAME_KEY]: wName, ...entries }; }
+      saveDicts(dicts); refreshDictSelect(dn); $id('bo5-dict-select').value = dn; refreshPreview();
+      if (duplicates.length) {
+        alert('⚠ 同じ技が複数ラウンドで異なるセリフを持っていました。\n最後のラウンドのセリフを登録しています。\n\n' +
+          duplicates.map(d => `【${d.skillValue}】\n` + d.rounds.map(r => `  R${r.r}: ${r.serif.substring(0, 25)}…`).join('\n')).join('\n'));
+      }
+      showMsg(`辞書「${dn}」に ${count} 件登録しました`);
+    });
+
+    document.addEventListener('change', e => {
+      if (!e.target.matches('input[type="radio"][name^="skill_r"]')) return;
+      setTimeout(() => { refreshPreview(); if (isModalOpen() && editorDictName) renderModalRows(editorDictName); }, 120);
     });
   }
 
-  // =====================================================================
-  // スタイル
-  // =====================================================================
   function injectStyles() {
     const s = document.createElement('style');
     s.textContent = `
-      #bo5-serif-panel {
-        position:fixed;bottom:20px;right:20px;width:330px;
-        background:#1e1e2e;color:#cdd6f4;
-        border:1px solid #45475a;border-radius:10px;
-        box-shadow:0 4px 24px rgba(0,0,0,.6);
-        z-index:99999;font-size:13px;font-family:sans-serif;
-      }
-      #bo5-serif-header {
-        background:#313244;padding:8px 12px;
-        border-radius:10px 10px 0 0;
-        display:flex;justify-content:space-between;align-items:center;
-        font-weight:bold;cursor:default;user-select:none;
-      }
-      #bo5-serif-header button {
-        background:none;border:none;color:#cdd6f4;cursor:pointer;font-size:14px;padding:0 4px;
-      }
-      #bo5-serif-body { padding:10px 12px 12px; }
-      .bo5-section { margin-bottom:8px; }
-      .bo5-section > label {
-        display:block;font-size:11px;color:#a6adc8;margin-bottom:3px;
-      }
-      #bo5-dict-select {
-        background:#313244;color:#cdd6f4;
-        border:1px solid #45475a;border-radius:5px;padding:4px 6px;
-      }
-      #bo5-serif-panel button {
-        background:#313244;color:#cdd6f4;
-        border:1px solid #45475a;border-radius:5px;
-        padding:5px 8px;cursor:pointer;font-size:12px;
-        transition:background .15s;
-      }
-      #bo5-serif-panel button:hover { background:#45475a; }
-      .bo5-btn-primary {
-        background:#4c6ef5!important;color:#fff!important;
-        border-color:#4c6ef5!important;font-weight:bold;
-      }
-      .bo5-btn-primary:hover { background:#3b5bdb!important; }
-      .bo5-preview {
-        background:#181825;border:1px solid #313244;
-        border-radius:6px;padding:6px 8px;
-        font-size:11px;max-height:160px;overflow-y:auto;
-      }
-      .bo5-preview-row {
-        display:flex;gap:6px;padding:3px 0;
-        border-bottom:1px solid #313244;align-items:flex-start;
-      }
-      .bo5-preview-row:last-child { border-bottom:none; }
-      .bo5-pv-round  { color:#89b4fa;min-width:22px;font-weight:bold; }
-      .bo5-pv-skill  { color:#a6e3a1;min-width:72px; }
-      .bo5-pv-serif  { color:#cdd6f4;word-break:break-all;flex:1; }
-      .bo5-pv-serif.missing { color:#f38ba8;font-style:italic; }
-      #bo5-serif-editor {
-        background:#181825;border:1px solid #313244;
-        border-radius:6px;padding:8px;margin-top:2px;
-      }
-      .bo5-editor-row { margin-bottom:7px; }
-      .bo5-editor-row label {
-        color:#a6e3a1;font-size:11px;display:block;margin-bottom:2px;
-      }
-      .bo5-editor-row textarea {
-        width:100%;box-sizing:border-box;
-        background:#1e1e2e;color:#cdd6f4;
-        border:1px solid #45475a;border-radius:4px;
-        padding:4px;font-size:11px;resize:vertical;min-height:42px;
-      }
-      .bo5-editor-del-row {
-        font-size:10px!important;padding:2px 6px!important;
-        color:#f38ba8!important;margin-top:2px;
-      }
-      #bo5-msg { font-size:11px;min-height:16px; }
+      #bo5-serif-panel{position:fixed;bottom:20px;right:20px;width:310px;background:#1e1e2e;color:#cdd6f4;border:1px solid #45475a;border-radius:10px;box-shadow:0 4px 24px rgba(0,0,0,.6);z-index:99998;font-size:13px;font-family:sans-serif}
+      #bo5-serif-header{background:#313244;padding:8px 12px;border-radius:10px 10px 0 0;display:flex;justify-content:space-between;align-items:center;font-weight:bold;cursor:default;user-select:none}
+      #bo5-serif-header button{background:none;border:none;color:#cdd6f4;cursor:pointer;font-size:14px;padding:0 4px}
+      #bo5-serif-body{padding:10px 12px 12px}
+      .bo5-section{margin-bottom:8px}
+      .bo5-section>label{display:block;font-size:11px;color:#a6adc8;margin-bottom:3px}
+      #bo5-dict-select{background:#313244;color:#cdd6f4;border:1px solid #45475a;border-radius:5px;padding:4px 6px}
+      #bo5-serif-panel button{background:#313244;color:#cdd6f4;border:1px solid #45475a;border-radius:5px;padding:5px 8px;cursor:pointer;font-size:12px;transition:background .15s}
+      #bo5-serif-panel button:hover{background:#45475a}
+      .bo5-btn-primary{background:#4c6ef5!important;color:#fff!important;border-color:#4c6ef5!important;font-weight:bold}
+      .bo5-btn-primary:hover{background:#3b5bdb!important}
+      .bo5-preview{background:#181825;border:1px solid #313244;border-radius:6px;padding:6px 8px;font-size:11px;max-height:160px;overflow-y:auto}
+      .bo5-preview-row{display:flex;gap:6px;padding:3px 0;border-bottom:1px solid #313244;align-items:flex-start}
+      .bo5-preview-row:last-child{border-bottom:none}
+      .bo5-pv-round{color:#89b4fa;min-width:22px;font-weight:bold}
+      .bo5-pv-skill{color:#a6e3a1;min-width:72px}
+      .bo5-pv-serif{color:#cdd6f4;word-break:break-all;flex:1}
+      #bo5-msg{font-size:11px;min-height:16px}
+      #bo5-modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:99999;align-items:center;justify-content:center}
+      #bo5-modal{background:#1e1e2e;color:#cdd6f4;border:1px solid #45475a;border-radius:12px;box-shadow:0 8px 40px rgba(0,0,0,.8);width:min(680px,92vw);max-height:85vh;display:flex;flex-direction:column;font-size:13px;font-family:sans-serif;overflow:hidden}
+      #bo5-modal-header{background:#313244;padding:12px 16px;border-radius:12px 12px 0 0;display:flex;justify-content:space-between;align-items:center;font-weight:bold;font-size:14px;flex-shrink:0}
+      #bo5-modal-header button{background:#45475a;color:#cdd6f4;border:1px solid #585b70;border-radius:5px;padding:5px 10px;cursor:pointer;font-size:12px;transition:background .15s}
+      #bo5-modal-header button:hover{background:#585b70}
+      #bo5-modal-close{background:none!important;border:none!important;font-size:18px!important;padding:2px 6px!important;color:#a6adc8!important}
+      #bo5-modal-rows{overflow-y:auto;padding:16px 20px;flex:1}
+      .bo5m-section{margin-bottom:20px}
+      .bo5m-section-hdr{font-size:12px;font-weight:bold;padding-bottom:4px;margin-bottom:10px;border-bottom:1px solid #45475a}
+      .bo5m-skill-row{background:#181825;border:1px solid #313244;border-radius:8px;padding:12px 14px;margin-bottom:10px}
+      .bo5m-skill-hdr{display:flex;align-items:baseline;gap:8px;margin-bottom:8px}
+      .bo5m-skill-name{color:#a6e3a1;font-weight:bold;font-size:13px}
+      .bo5m-skill-key{color:#585b70;font-size:11px;flex:1}
+      .bo5m-del-btn{background:none!important;border:none!important;color:#f38ba8!important;cursor:pointer;font-size:12px!important;padding:2px 4px!important;margin-left:auto}
+      .bo5m-del-btn:hover{color:#ff8!important}
+      .bo5m-field-row{display:flex;gap:10px;align-items:flex-start;margin-bottom:6px}
+      .bo5m-label{color:#a6adc8;font-size:11px;min-width:3em;padding-top:5px;flex-shrink:0}
+      .bo5m-input{flex:1;background:#1e1e2e;color:#cdd6f4;border:1px solid #45475a;border-radius:5px;padding:5px 8px;font-size:12px}
+      .bo5m-name-input{max-width:180px}
+      .bo5m-textarea{flex:1;background:#1e1e2e;color:#cdd6f4;border:1px solid #45475a;border-radius:5px;padding:6px 8px;font-size:12px;resize:vertical;min-height:60px;line-height:1.5}
+      .bo5m-input:focus,.bo5m-textarea:focus{outline:none;border-color:#4c6ef5;box-shadow:0 0 0 2px rgba(76,110,245,.25)}
     `;
     document.head.appendChild(s);
   }
 
-  // =====================================================================
-  // ユーティリティ
-  // =====================================================================
-  function showMsg(text, isError = false) {
-    const el = document.getElementById('bo5-msg');
-    if (!el) return;
-    el.textContent = text;
-    el.style.color = isError ? '#f38ba8' : '#a6e3a1';
-    clearTimeout(el._t);
-    el._t = setTimeout(() => { el.textContent = ''; }, 5000);
-  }
-  function esc(v) {
-    return String(v ?? '')
-      .replace(/&/g,'&amp;').replace(/</g,'&lt;')
-      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-  }
-
-  // =====================================================================
-  // 起動
-  // =====================================================================
   function init() {
-    if (!location.pathname.endsWith('setup.php')) return;
-    if (!document.querySelector('.skillset')) return;
+    if (!location.pathname.endsWith('setup.php') || !$('.skillset')) return;
     buildUI();
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
-  } else {
-    init();
-  }
+  document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', init) : init();
 
 })();
