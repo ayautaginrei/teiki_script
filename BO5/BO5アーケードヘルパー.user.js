@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         BO5アーケードヘルパー
 // @namespace    http://tampermonkey.net/
-// @version      1.2
+// @version      1.3
 // @description  踏破数表示、前回と同じ設定で挑戦、戦闘設定の自動絞り込みなど
-// @author       ayautaginrei(gemini)
+// @author       ayautaginrei
 // @updateURL    https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/BO5%E3%82%A2%E3%83%BC%E3%82%B1%E3%83%BC%E3%83%89%E3%83%98%E3%83%AB%E3%83%91%E3%83%BC.user.js
 // @match        https://wdrb.work/bo5/battle_lobby.php?mode=arcade
 // @grant        none
@@ -20,8 +20,14 @@
         const arcadeForm = document.getElementById('btlb_form_arcade');
         if (!arcadeForm) return;
 
+        // ロビー画面: arcade_mode ラジオボタンが存在し、bet inputがない
+        const arcadeModeRadio = arcadeForm.querySelector('input[name="arcade_mode"]');
         const betInput = arcadeForm.querySelector('input[name="bet"]');
-        if (betInput) {
+
+        if (arcadeModeRadio && !betInput) {
+            handleLobbyScreen(arcadeForm);
+        } else if (betInput) {
+            // 旧形式（betあり）もロビーとして扱う
             handleLobbyScreen(arcadeForm);
         } else {
             handleInBattleScreen(arcadeForm);
@@ -35,13 +41,13 @@
         buttonContainer.id = 'custom-button-container';
         Object.assign(buttonContainer.style, { display: 'flex', gap: '10px', marginBottom: '20px', justifyContent: 'center' });
         equipDiv.parentNode.insertBefore(buttonContainer, equipDiv);
-        const lastBet = sessionStorage.getItem('lastBet');
+
+        const lastMode = sessionStorage.getItem('lastArcadeMode');
         const lastWeaponId = sessionStorage.getItem('lastWeaponId');
-        if (lastBet && lastWeaponId) {
-            createRetryButton(form, buttonContainer, lastBet, lastWeaponId);
-        } else {
-            createMaxBetButton(form, buttonContainer);
+        if (lastMode && lastWeaponId) {
+            createRetryButton(form, buttonContainer, lastMode, lastWeaponId);
         }
+
         setupChallengeDataSaver(form);
         setupWeaponCounter(form);
     }
@@ -157,12 +163,14 @@
             const initiallyVisibleItems = equipList.querySelectorAll('li:not(.drilldown)');
 
             if (searchTerm) {
+                // カンマ区切りおよび中点・スラッシュ・スペース区切りの両方に対応
                 const regex = new RegExp(`^(UN)?${searchTerm}(\\d+%)?$`);
                 const exactMatchItems = [];
 
                 initiallyVisibleItems.forEach(item => {
                     const content = item.dataset.tippyContent || '';
-                    const words = content.split(/[・\s\t\/／]+/);
+                    // カンマ区切り・中点・スラッシュ・スペース・タブ・全角スラッシュすべてに対応
+                    const words = content.split(/[,，・\s\t\/／]+/);
 
                     if (words.some(word => {
                         const cleanedWord = word.replace(/[()（）]/g, '');
@@ -188,55 +196,64 @@
         observer.observe(equipList, observerOptions);
     }
 
-    function createRetryButton(form, container, bet, weaponId) {
-        const retryButton = createStyledButton('前回と同じ武器で再挑戦');
+    function createRetryButton(form, container, mode, weaponId) {
+        const modeLabel = mode === 'hundred' ? 'HUNDRED' : 'SHORT';
+        const retryButton = createStyledButton(`前回と同じ設定で再挑戦 (${modeLabel})`);
         retryButton.addEventListener('click', () => {
-            const numberInput = form.querySelector('input[name="bet"]');
+            // モード選択
+            const modeRadio = form.querySelector(`input[name="arcade_mode"][value="${mode}"]`);
+            // 武器選択
             const lastWeaponElement = form.querySelector(`li.cap[data-weapon="${weaponId}"]`);
             const startButton = form.querySelector('input.start[type="submit"]');
-            if (numberInput && lastWeaponElement && startButton) {
-                numberInput.value = bet;
+            if (modeRadio && lastWeaponElement && startButton) {
+                modeRadio.click();
                 lastWeaponElement.click();
                 startButton.click();
             }
         });
         container.appendChild(retryButton);
     }
-    function createMaxBetButton(form, container) {
-        const maxBetButton = createStyledButton('MAX BET');
-        maxBetButton.addEventListener('click', () => {
-            const numberInput = form.querySelector('input[name="bet"]');
-            if (numberInput) {
-                numberInput.value = numberInput.max;
-            }
-        });
-        container.appendChild(maxBetButton);
-    }
+
     function setupChallengeDataSaver(form) {
         form.addEventListener('submit', () => {
-            const numberInput = form.querySelector('input[name="bet"]');
+            const selectedModeRadio = form.querySelector('input[name="arcade_mode"]:checked');
             const selectedRadio = form.querySelector('input[name="w_id"]:checked');
-            if (numberInput && selectedRadio) {
+
+            if (selectedModeRadio && selectedRadio) {
                 const selectedLi = selectedRadio.closest('li.cap');
                 if (selectedLi && selectedLi.dataset.weapon) {
-                    sessionStorage.setItem('lastBet', numberInput.value);
+                    sessionStorage.setItem('lastArcadeMode', selectedModeRadio.value);
                     sessionStorage.setItem('lastWeaponId', selectedLi.dataset.weapon);
                 }
             }
         });
     }
+
     function setupWeaponCounter(form) {
         const weaponHeader = Array.from(form.querySelectorAll('h3')).find(h => h.textContent.includes('WEAPON SELECT'));
         if (!weaponHeader || weaponHeader.querySelector('.weapon-counter-span')) return;
+
+        const allItems = form.querySelectorAll('ul.battle_weapon li[data-weapon]');
+        const total = allItems.length;
+
+        // shortとhundredのクリア数をそれぞれ集計
+        let clearedShort = 0;
+        let clearedHundred = 0;
+        allItems.forEach(li => {
+            if (li.dataset.clearedShort === '1') clearedShort++;
+            if (li.dataset.clearedHundred === '1') clearedHundred++;
+        });
+
+        const shortPct = total > 0 ? ((clearedShort / total) * 100).toFixed(1) : '0.0';
+        const hundredPct = total > 0 ? ((clearedHundred / total) * 100).toFixed(1) : '0.0';
+
         const countSpan = document.createElement('span');
         countSpan.className = 'weapon-counter-span';
         Object.assign(countSpan.style, { marginLeft: '10px', fontSize: '14px', color: '#fff' });
-        const owned = form.querySelectorAll('ul.battle_weapon li.won').length;
-        const total = form.querySelectorAll('ul.battle_weapon li').length;
-        const percentage = total > 0 ? ((owned / total) * 100).toFixed(1) : '0.0';
-        countSpan.textContent = `${owned} / ${total} (${percentage}%)`;
+        countSpan.textContent = `SHORT: ${clearedShort}/${total} (${shortPct}%) / HUNDRED: ${clearedHundred}/${total} (${hundredPct}%)`;
         weaponHeader.appendChild(countSpan);
     }
+
     function createStyledButton(text) {
         const button = document.createElement('button');
         button.textContent = text;
