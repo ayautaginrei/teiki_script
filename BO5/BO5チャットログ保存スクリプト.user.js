@@ -6,7 +6,7 @@
 // @author       ayautaginrei
 // @match        https://wdrb.work/bo5/lobby.php*
 // @match        https://wdrb.work/bo5/archives.php*
-// @upgradeURL   
+// @upgradeURL   https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/BO5/BO5%E3%83%81%E3%83%A3%E3%83%83%E3%83%88%E3%83%AD%E3%82%B0%E4%BF%9D%E5%AD%98%E3%82%B9%E3%82%AF%E3%83%AA%E3%83%97%E3%83%88.user.js
 // @grant        none
 // ==/UserScript==
 
