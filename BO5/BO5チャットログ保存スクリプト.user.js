@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BO5チャットログ保存スクリプト
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.0.1
 // @description  ページャーを遡ってチャットログを取得し、HTMLとして保存します (lobby / archives 両対応)
 // @author       ayautaginrei
 // @match        https://wdrb.work/bo5/lobby.php*
@@ -215,6 +215,7 @@
             const el = document.querySelector('.area_info .area_title');
             if (el) areaName = el.textContent.split('-')[0].trim();
         } else if (IS_ARCHIVE) {
+            // archives: .chara_container .area_info b が "観戦席 - <span>S席</span>" 形式
             const areaInfoB = document.querySelector('.chara_container .area_info b');
             if (areaInfoB) {
                 // テキストノード（最初の子）から '-' 前を取る
@@ -229,6 +230,7 @@
         if (zoneEl) {
             zoneName = zoneEl.textContent.trim();
         } else if (IS_ARCHIVE) {
+            // archives: .chara_container .area_info b > span にゾーン名 ("S席" 等)
             const zoneSpan = document.querySelector('.chara_container .area_info b span');
             if (zoneSpan) zoneName = zoneSpan.textContent.trim();
         }
@@ -290,6 +292,16 @@
         try {
             fetchedLogs = [];
 
+            // 現在開いているページ番号 (未指定なら1)
+            const currentPage = parseInt(getParam('page') || '1', 10);
+
+            // 現在ページのログはDOMから直接取得してキャッシュ
+            const currentPageLogs = (() => {
+                const talkList = document.querySelector('.talk_list');
+                if (!talkList) return [];
+                return Array.from(talkList.querySelectorAll('.chat_shout')).map(el => el.cloneNode(true));
+            })();
+
             // ページングURLをページ種別ごとに組み立て
             function buildUrl(page) {
                 if (IS_ARCHIVE) {
@@ -305,12 +317,21 @@
                 }
             }
 
-            let page   = 1;
+            let page    = 1;
             let hasMore = true;
             const parser = new DOMParser();
 
             while (hasMore) {
                 updateProgress(page, page + 3);
+
+                // 現在開いているページはfetch不要 → キャッシュを挿入してスキップ
+                if (page === currentPage) {
+                    fetchedLogs.push(...currentPageLogs);
+                    document.getElementById('info-fetched').textContent = fetchedLogs.length;
+                    setStatus(`ページ ${page} を取得中... (計 ${fetchedLogs.length} 件)`);
+                    page++;
+                    continue;
+                }
 
                 try {
                     const response = await fetch(buildUrl(page));
@@ -338,10 +359,9 @@
                 }
             }
 
-            // fallback
+            // fallback: 何も取れなかった場合は現在ページのキャッシュだけ使う
             if (fetchedLogs.length === 0) {
-                const cur = document.querySelector('.talk_list');
-                if (cur) fetchedLogs = Array.from(cur.querySelectorAll('.chat_shout')).map(el => el.cloneNode(true));
+                fetchedLogs = currentPageLogs;
             }
 
             hideProgress();
