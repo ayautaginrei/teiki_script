@@ -5,7 +5,7 @@
 // @description  武器選択をプリセット保存・呼び出しできるようにする
 // @author       ayautaginrei
 // @match        https://wdrb.work/bo5/battle_lobby.php*
-// @updateURL    
+// @updateURL    https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/BO5/BO5%E6%B1%BA%E9%97%98%E6%AD%A6%E5%99%A8%E3%83%97%E3%83%AA%E3%82%BB%E3%83%83%E3%83%88.user.js
 // @grant        none
 // ==/UserScript==
 
