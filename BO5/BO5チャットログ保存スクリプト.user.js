@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BO5チャットログ保存スクリプト
 // @namespace    http://tampermonkey.net/
-// @version      1.2
+// @version      1.2.1
 // @description  ページャーを遡ってチャットログを取得し、HTMLとして保存します (lobby / archives 両対応)
 // @author       ayautaginrei
 // @match        https://wdrb.work/bo5/lobby.php*
@@ -197,8 +197,15 @@
         h +=         '</label>';
         h +=       '</div>';
         h +=       '<div style="margin:0.4em 0;">';
+        h +=         '<p><b>並べ替え</b></p>';
         h +=         '<label style="display:flex;align-items:center;gap:0.4em;cursor:pointer;width:fit-content;">';
-        h +=           '<input type="checkbox" id="chk-merge-sort"><b>日時順に並べ替える（古い順）</b>';
+        h +=           '<input type="radio" name="merge-sort" id="merge-sort-none" value="none" checked>並べ替えない';
+        h +=         '</label>';
+        h +=         '<label style="display:flex;align-items:center;gap:0.4em;cursor:pointer;width:fit-content;">';
+        h +=           '<input type="radio" name="merge-sort" id="merge-sort-asc" value="asc">古い順に並べる';
+        h +=         '</label>';
+        h +=         '<label style="display:flex;align-items:center;gap:0.4em;cursor:pointer;width:fit-content;">';
+        h +=           '<input type="radio" name="merge-sort" id="merge-sort-desc" value="desc">新しい順に並べる';
         h +=         '</label>';
         h +=       '</div>';
         h +=       '<div style="margin:0.5em 0;">';
@@ -337,39 +344,107 @@
         return { fromDate: toDate(fv), toDate: toDate(tv) };
     }
 
-    function buildUrl(page) {
+    // 現在の表示件数をDOMのselectから取得する（URLパラメータが取れない場合のフォールバック）
+    function getCurrentList() {
+        var v = getParam('list');
+        if (v) return v;
+        // OTHERタブのselectから選択中の値を取得
+        var sel = document.querySelector('select[name="disp_num"], select[name="list"]');
+        if (sel) return sel.value;
+        // さらにフォールバック：現在のURLのリンクから list= を探す
+        var listLink = document.querySelector('a[href*="list="]');
+        if (listLink) {
+            var m = (listLink.getAttribute('href') || '').match(/[?&]list=(\d+)/);
+            if (m) return m[1];
+        }
+        return '72'; // 最終フォールバック（デフォルトは72件）
+    }
+
+    // 1ページあたりの表示件数（view）をユーザーごとの設定に合わせて動的に検出する。
+    // サイト側の「表示件数設定」はユーザーによって異なる（12件とは限らない）ため、
+    // 固定値をハードコードせず、可能な限り実際のページから読み取る。
+    function getViewCount(doc) {
+        doc = doc || document;
+        // 1) URLパラメータ / hidden inputで明示されていればそれを使う
+        var v = getParam('view');
+        if (v) return v;
+        // 2) 現在ページ内にある view= を含むリンク（ページャー等）から拾う
+        var link = doc.querySelector('a[href*="view="]');
+        if (link) {
+            var m = (link.getAttribute('href') || '').match(/[?&]view=(\d+)/);
+            if (m) return m[1];
+        }
+        // 3) select等の表示件数指定コントロールがあれば拾う
+        var sel = doc.querySelector('select[name="view"]');
+        if (sel && sel.value) return sel.value;
+        // 4) 最終フォールバック：現在ページに実際に表示されているログ件数を「1ページあたりの件数」とみなす
+        var cnt = doc.querySelectorAll('.talk_list .chat_shout').length;
+        return cnt > 0 ? String(cnt) : '12';
+    }
+
+    // ページャーの「表示ラベル」と実際のURL用ページ番号（page=）のズレ（オフセット）と、
+    // 現在何ページ目を表示しているか（表示ラベル基準・1始まり）を、
+    // 決め打ちせず実際のページャーDOMから読み取る。
+    // 例）現在ページが「1」でリンクが「2→page=1」「3→page=2」「4→page=3」の場合、
+    //     offset=1（ラベル - page番号 = 1）、currentLabel=1 となる。
+    function getPagerInfo(doc) {
+        doc = doc || document;
+        var pager = doc.querySelector('.pager');
+        if (!pager) {
+            // ページャーが無い＝1ページしかない
+            return { offset: 1, currentLabel: 1, maxLabel: 1 };
+        }
+        var offset = 1; // 既定値（従来の挙動＝1ページ目はpage未指定）
+        var maxLabel = 1;
+        var links = Array.from(pager.querySelectorAll('a[href*="page="]'));
+        links.forEach(function(a) {
+            var m = (a.getAttribute('href') || '').match(/[?&]page=(\d+)/);
+            var label = parseInt((a.textContent || '').trim(), 10);
+            if (m && !isNaN(label)) {
+                offset = label - parseInt(m[1], 10);
+                maxLabel = Math.max(maxLabel, label);
+            }
+        });
+        var curEl = pager.querySelector('.current');
+        var currentLabel = curEl ? parseInt((curEl.textContent || '').trim(), 10) : 1;
+        if (isNaN(currentLabel)) currentLabel = 1;
+        maxLabel = Math.max(maxLabel, currentLabel);
+        return { offset: offset, currentLabel: currentLabel, maxLabel: maxLabel };
+    }
+
+    // uiPage: ユーザーから見た「何ページ目か」（1始まり）。内部的なpage=パラメータへ変換する。
+    // 1ページ目に相当するpage番号（<=0）の場合はpage自体を付与しない（サイトの実挙動に合わせる）。
+    function buildUrl(uiPage, offset, viewCount) {
+        var siteParam = uiPage - offset;
+        var pageQS = siteParam > 0 ? ('&page=' + siteParam) : '';
         if (IS_ARCHIVE) {
             return 'archives.php?loc=' + (getParam('loc') || 'stand') +
                    '&area=' + (getParam('area') || '0') +
-                   '&view=' + (getParam('view') || '0') +
-                   '&page=' + page;
+                   '&view=' + (getParam('view') || viewCount) +
+                   pageQS;
         }
         return 'lobby.php?area=' + (getParam('area') || 'stand') +
-               '&list=' + (getParam('list') || '3') +
+               '&list=' + getCurrentList() +
                '&zone=' + (getParam('zone') || '0') +
-               '&page=' + page;
+               '&view=' + viewCount +
+               pageQS;
     }
 
-    // page=1をfetchしてページャーから最終ページ取得。page=1のログも返す。
-    async function detectLastPage() {
+    // uiPage=1（先頭ページ）をfetchしてページャーから最終ページ・オフセットを取得。1ページ目のログも返す。
+    async function detectLastPage(offset, viewCount) {
         try {
-            var res = await fetch(buildUrl(1));
-            if (!res.ok) return { lastPage: null, page1Logs: [] };
+            var res = await fetch(buildUrl(1, offset, viewCount));
+            if (!res.ok) return { lastPage: null, page1Logs: [], offset: offset };
             var doc = new DOMParser().parseFromString(await res.text(), 'text/html');
-            var pagerLinks = Array.from(doc.querySelectorAll('.pager a[href]'));
-            var lastPage = 1;
-            pagerLinks.forEach(function(a) {
-                var m = (a.getAttribute('href') || '').match(/[?&]page=(\d+)/);
-                if (m) lastPage = Math.max(lastPage, parseInt(m[1], 10));
-            });
+            var info = getPagerInfo(doc);
             var tl = doc.querySelector('.talk_list');
             var page1Logs = tl
                 ? Array.from(tl.querySelectorAll('.chat_shout')).map(function(el) { return el.cloneNode(true); })
                 : [];
-            return { lastPage: lastPage, page1Logs: page1Logs };
+            return { lastPage: info.maxLabel, page1Logs: page1Logs, offset: info.offset };
         } catch (e) {
             console.warn('最終ページ検出エラー:', e);
-            return { lastPage: null, page1Logs: [] };
+            return { lastPage: null, page1Logs: [], offset: offset };
         }
     }
 
@@ -384,7 +459,14 @@
             var fetchAll   = document.getElementById('chk-fetch-all').checked;
             var fetchRange = document.getElementById('chk-fetch-range').checked;
 
-            var currentPage = parseInt(getParam('page') || '1', 10);
+            // 現在ページ番号・ページ番号オフセット・1ページあたりの表示件数は、
+            // URLパラメータの有無を決め打ちせず、実際に表示中のページャー／DOMから検出する
+            // （サイトのページ番号の始まり方や、ユーザーごとの表示件数設定に依存しないようにするため）。
+            var pagerInfo   = getPagerInfo(document);
+            var currentPage = pagerInfo.currentLabel;
+            var pageOffset  = pagerInfo.offset;
+            var viewCount   = getViewCount(document);
+
             var tl0 = document.querySelector('.talk_list');
             var currentPageLogs = tl0
                 ? Array.from(tl0.querySelectorAll('.chat_shout')).map(function(el) { return el.cloneNode(true); })
@@ -409,10 +491,11 @@
             var prefetchedPage1Logs = null;
             if (fetchAll && pageTo === null) {
                 setStatus('最終ページを確認中...');
-                var detected = await detectLastPage();
+                var detected = await detectLastPage(pageOffset, viewCount);
                 if (detected.lastPage) {
                     pageTo = detected.lastPage;
                     prefetchedPage1Logs = detected.page1Logs;
+                    pageOffset = detected.offset; // 実際に取得したページャーから再検出したオフセットで上書き
                     setStatus('全 ' + pageTo + ' ページを取得します...');
                 }
             }
@@ -450,7 +533,7 @@
                 }
 
                 try {
-                    var res = await fetch(buildUrl(page));
+                    var res = await fetch(buildUrl(page, pageOffset, viewCount));
                     if (!res.ok) break;
                     var doc = parser.parseFromString(await res.text(), 'text/html');
                     var tl  = doc.querySelector('.talk_list');
@@ -509,7 +592,9 @@
     }
 
     function removeLinks(doc) {
-        doc.querySelectorAll('a').forEach(function(a) {
+        // a.vs（バトル詳細リンク）は href を保持する
+        doc.querySelectorAll('a[href]').forEach(function(a) {
+            if (a.classList.contains('vs')) return;
             a.removeAttribute('href');
             a.style.cssText += ';cursor:default;pointer-events:none;text-decoration:none;';
         });
@@ -600,7 +685,8 @@
 
         var parser    = new DOMParser();
         var dedupe    = document.getElementById('chk-merge-dedupe').checked;
-        var sortAsc   = document.getElementById('chk-merge-sort').checked;
+        var sortMode = document.querySelector('input[name="merge-sort"]:checked');
+        sortMode = sortMode ? sortMode.value : 'none';
         var templateDoc = null;
         var allLogs     = [];
         var seenKeys    = new Set();
@@ -621,10 +707,11 @@
                 await new Promise(function(r) { setTimeout(r, 0); });
             }
             if (!templateDoc || allLogs.length === 0) { setMergeStatus('エラー: ログが見つかりませんでした', true); return; }
-            if (sortAsc) {
+            if (sortMode === 'asc' || sortMode === 'desc') {
                 allLogs.sort(function(a, b) {
                     if (!a.time || !b.time) return 0;
-                    return a.time.localeCompare(b.time);
+                    var cmp = a.time.localeCompare(b.time);
+                    return sortMode === 'desc' ? -cmp : cmp;
                 });
             }
 
