@@ -3,8 +3,9 @@
 // @namespace    https://rarirupj.com/
 // @version      1.0
 // @description  アイコン選択方式をモーダルに変更し、アイコンプレビュー展開時にはフォーカス中のテキストボックスにクリックしたアイコン番号を入力します
+// @author       ayautaginrei
 // @match        https://rarirupj.com/leciar/*
-// @updateURL    
+// @updateURL    https://github.com/ayautaginrei/teiki_script/raw/refs/heads/main/Leciel%20Arcadia/%E3%83%AB%E3%82%B7%E3%82%A2%E3%82%AB%E3%82%A2%E3%82%A4%E3%82%B3%E3%83%B3%E9%81%B8%E6%8A%9E.user.js
 // @run-at       document-idle
 // @grant        none
 // ==/UserScript==
