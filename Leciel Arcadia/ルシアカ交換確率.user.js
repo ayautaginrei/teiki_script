@@ -27,7 +27,7 @@
     style.id = 'js-exchange-prob-style';
     style.textContent = `
       .${PROB_CLASS}, .${PROB_HEADER_CLASS} { text-align: center !important; width: 76px !important; white-space: nowrap !important; }
-      .${CHECK_CLASS}, .${CHECK_HEADER_CLASS} { text-align: center !important; width: 1% !important; white-space: nowrap !important; }
+      .${CHECK_CLASS}, .${CHECK_HEADER_CLASS} { text-align: center !important; width: 5% !important; white-space: nowrap !important; }
       .js-exchange-count-cell, .js-exchange-count-header { width: 64px !important; white-space: nowrap !important; text-align: center !important; }
       .${SUMMARY_CLASS} { margin-top: 4px; font-weight: bold; }
     `;
