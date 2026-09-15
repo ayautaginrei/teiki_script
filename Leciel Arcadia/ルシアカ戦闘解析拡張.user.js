@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ルシアカ戦闘解析拡張
 // @namespace    lc-battle-analyzer
-// @version      1.0
+// @version      1.1
 // @description  戦闘結果画面の左側パネルにあるSP・連続値を実数表記にし、末尾の戦闘解析を拡張します
 // @author       ayautaginrei
 // @match        https://rarirupj.com/leciar/log*
@@ -72,7 +72,7 @@
       name: '守減', icon: 'defD', kind: 'debuff',
       desc: 'DEFの実数値が減少する。\n軽減率が減少する。',
     },
-    spu: {
+    sp: {
       name: '速増', icon: 'speedU', kind: 'buff',
       desc: 'DEXとAGIの実数値が増加する（行動順には影響しない）。\n連続値の自然増加量・回避率が増加する。',
     },
@@ -90,7 +90,7 @@
     },
   };
 
-  const STATUS_ORDER = ['p', 'f', 'c', 'pa', 'he', 'pe', 'sh', 'k', 'a', 'au', 'd', 'du', 'spu', 'spd', 'y', 'so'];
+  const STATUS_ORDER = ['p', 'f', 'c', 'pa', 'he', 'pe', 'sh', 'k', 'a', 'au', 'd', 'du', 'sp', 'spd', 'y', 'so'];
 
   function sortByRulebookOrder(keys) {
     const known = STATUS_ORDER.filter((k) => keys.includes(k));
@@ -212,6 +212,33 @@
       turns.push({ label, byUnit });
     });
     return turns;
+  }
+
+  // ユニットごとの「〇〇の行動！」（連続行動時は2回以上）の回数をターン別に集計。
+  // 「〇〇 の 自動行動！」（受動効果）や「〇〇 と △△ のチェインスキル！」は対象外。
+  function collectActionCounts(units, turns) {
+    const nameToIndex = {};
+    Object.values(units).forEach((u) => { nameToIndex[u.name] = u.index; });
+    const namesByLength = Object.keys(nameToIndex).sort((a, b) => b.length - a.length);
+
+    const perTurn = {};
+    Object.values(units).forEach((u) => {
+      perTurn[u.index] = turns.map(() => 0);
+    });
+
+    const roundEls = document.querySelectorAll('section.round');
+    roundEls.forEach((roundEl, turnIdx) => {
+      roundEl.querySelectorAll('section.turns > section.turn > span.actor').forEach((el) => {
+        const text = (el.textContent || '').trim();
+        if (!text.endsWith('の行動！')) return; // 「の自動行動！」「のチェインスキル！」を除外
+        const name = namesByLength.find((n) => text === `${n}の行動！`);
+        if (!name) return;
+        const idx = nameToIndex[name];
+        if (perTurn[idx] && perTurn[idx][turnIdx] !== undefined) perTurn[idx][turnIdx] += 1;
+      });
+    });
+
+    return { perTurn };
   }
 
   function collectHitCounts(units, turns) {
@@ -370,7 +397,7 @@
 
   const SP_MAX = 300;
 
-  function buildUnitTurnTable(unit, turns, hitCounts, peaceHeatGains) {
+  function buildUnitTurnTable(unit, turns, hitCounts, peaceHeatGains, actionCounts) {
     const seenKeysRaw = [];
     turns.forEach((t) => {
       const obj = t.byUnit[unit.index];
@@ -383,6 +410,7 @@
     const seenKeys = sortByRulebookOrder([...new Set([...STATUS_ORDER, ...seenKeysRaw])]);
     const perTurnHits = (hitCounts && hitCounts.perTurn[unit.index]) || turns.map(() => 0);
     const perTurnPeaceGain = (peaceHeatGains && peaceHeatGains.perTurn[unit.index]) || turns.map(() => 0);
+    const perTurnActionCount = (actionCounts && actionCounts.perTurn[unit.index]) || turns.map(() => 0);
 
     const table = document.createElement('table');
     table.className = 'lc-turn-table';
@@ -394,12 +422,22 @@
     turnTh.textContent = 'ターン';
     headRow.appendChild(turnTh);
 
+    const actionCountTh = document.createElement('th');
+    const actionCountLabel = document.createElement('span');
+    actionCountLabel.className = 'lc-status-text-label lc-kind-info';
+    actionCountLabel.textContent = '行動数';
+    actionCountTh.appendChild(actionCountLabel);
+    headRow.appendChild(actionCountTh);
+
     const spTh = document.createElement('th');
     spTh.textContent = 'SP';
     headRow.appendChild(spTh);
 
     const hitTh = document.createElement('th');
-    hitTh.textContent = '被弾数';
+    const hitLabel = document.createElement('span');
+    hitLabel.className = 'lc-status-text-label lc-kind-info';
+    hitLabel.textContent = '被弾数';
+    hitTh.appendChild(hitLabel);
     headRow.appendChild(hitTh);
 
     seenKeys.forEach((key) => {
@@ -421,6 +459,7 @@
       maxByKey[key] = Math.max(1, ...vals, 0);
     });
     const maxHit = Math.max(1, ...perTurnHits);
+    const maxActionCount = Math.max(1, ...perTurnActionCount);
 
     // --- ターンごとの行 ---
     const tbody = document.createElement('tbody');
@@ -432,6 +471,13 @@
       turnTd.className = 'lc-turn-label-cell';
       turnTd.textContent = t.label;
       tr.appendChild(turnTd);
+
+      // 行動数（このターンでのこのユニット自身の行動回数。通常1、連続行動発生時は2以上）
+      const actionCountTd = document.createElement('td');
+      const actCount = perTurnActionCount[turnIdx] || 0;
+      actionCountTd.textContent = String(actCount);
+      if (actCount >= 2) actionCountTd.style.background = heatColor(actCount, maxActionCount, 'info');
+      tr.appendChild(actionCountTd);
 
       // SP
       const spTd = document.createElement('td');
@@ -452,7 +498,7 @@
       const hitTd = document.createElement('td');
       const hitVal = perTurnHits[turnIdx] || 0;
       hitTd.textContent = hitVal ? String(hitVal) : '-';
-      if (hitVal) hitTd.style.background = heatColor(hitVal, maxHit);
+      if (hitVal) hitTd.style.background = heatColor(hitVal, maxHit, 'info');
       tr.appendChild(hitTd);
 
       // 状態異常/バフデバフ
@@ -463,12 +509,12 @@
           td.textContent = '-';
         } else {
           td.textContent = String(v);
-          td.style.background = heatColor(Math.abs(v), maxByKey[key]);
+          td.style.background = heatColor(Math.abs(v), maxByKey[key], defFor(key).kind);
         }
         if (key === 'pe') {
           const gain = perTurnPeaceGain[turnIdx] || 0;
           if (gain) {
-            td.setAttribute('data-lc-tooltip', `連続値増加: +${gain}`);
+            td.setAttribute('data-lc-tooltip', `連続増: +${gain}`);
           }
         }
         tr.appendChild(td);
@@ -481,10 +527,21 @@
     return table;
   }
 
-  function heatColor(value, max) {
+  const KIND_COLORS = {
+    bad: [220, 80, 80],
+    good: [90, 190, 120],
+    buff: [90, 150, 220],
+    debuff: [220, 150, 60],
+    shield: [180, 180, 90],
+    info: [80, 150, 255],
+    unknown: [190, 190, 200],
+  };
+
+  function heatColor(value, max, kind) {
     if (!max) return 'transparent';
+    const [r, g, b] = KIND_COLORS[kind] || KIND_COLORS.info;
     const ratio = Math.max(0, Math.min(1, value / max));
-    return `rgba(80, 150, 255, ${0.08 + ratio * 0.35})`;
+    return `rgba(${r}, ${g}, ${b}, ${0.08 + ratio * 0.35})`;
   }
 
   /* =========================================================================
@@ -501,6 +558,7 @@
 
     const hitCounts = collectHitCounts(units, turns);
     const peaceHeatGains = collectPeaceHeatGains(units, turns);
+    const actionCounts = collectActionCounts(units, turns);
     const skillMap = collectSkillBreakdown();
 
     const headerRow = table.querySelector('tbody tr.ally-row, tbody tr.enemy-row');
@@ -536,7 +594,7 @@
 
       const wrap = document.createElement('div');
       wrap.className = 'lc-turn-table-wrap';
-      wrap.appendChild(buildUnitTurnTable(unit, turns, hitCounts, peaceHeatGains));
+      wrap.appendChild(buildUnitTurnTable(unit, turns, hitCounts, peaceHeatGains, actionCounts));
       td.appendChild(wrap);
 
       turnRow.appendChild(td);
@@ -684,6 +742,19 @@
   function injectStyle() {
     const style = document.createElement('style');
     style.textContent = `
+      section.turns > section.turn,
+      section.passive-area > section.checkactions {
+        border-top: 1px solid rgba(255,255,255,0.15);
+        margin-top: 14px;
+        padding-top: 14px;
+      }
+      section.turns > section.turn:first-child,
+      section.passive-area > section.checkactions:first-child {
+        border-top: none;
+        margin-top: 0;
+        padding-top: 0;
+      }
+
       .lc-sp-value { font-size: 0.85em; opacity: 0.9; }
 
       .lc-heat-value {
@@ -702,6 +773,13 @@
 
       tr.lc-turn-row { display: none; }
       tr.lc-turn-row.lc-open { display: table-row; }
+      /* 展開行はサイト側の行ホバー演出（ally-row/enemy-row用）を継承してしまうため無効化 */
+      tr.lc-turn-row:hover > td.lc-turn-cell,
+      tr.lc-turn-row > td.lc-turn-cell:hover {
+        background: rgba(0,0,0,0.15) !important;
+        transform: none !important;
+        animation: none !important;
+      }
       td.lc-turn-cell { background: rgba(0,0,0,0.15); padding: 10px 12px; cursor: default; }
       .lc-turn-caption { font-weight: bold; font-size: 1em; margin-bottom: 8px; }
 
@@ -747,6 +825,7 @@
       .lc-kind-buff.lc-status-text-label { border-color: rgba(90,150,220,0.7); }
       .lc-kind-debuff.lc-status-text-label { border-color: rgba(220,150,60,0.7); }
       .lc-kind-shield.lc-status-text-label { border-color: rgba(180,180,90,0.7); }
+      .lc-kind-info.lc-status-text-label { border-color: rgba(80,150,255,0.75); }
 
       .lc-status-badge {
         position: relative;
