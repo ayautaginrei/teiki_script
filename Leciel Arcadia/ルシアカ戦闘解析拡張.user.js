@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ルシアカ戦闘解析拡張
 // @namespace    lc-battle-analyzer
-// @version      1.1
+// @version      1.2
 // @description  戦闘結果画面の左側パネルにあるSP・連続値を実数表記にし、末尾の戦闘解析を拡張します
 // @author       ayautaginrei
 // @match        https://rarirupj.com/leciar/log*
@@ -20,8 +20,6 @@
   /* =========================================================================
    * 0. 共通設定：状態異常/バフデバフの定義（アイコン・説明・分類）
    * ========================================================================= */
-
-  const ICON_BASE = '/leciar/static/icons/status/';
 
   const STATUS_DEFS = {
     p: {
@@ -90,7 +88,7 @@
     },
   };
 
-  const STATUS_ORDER = ['p', 'f', 'c', 'pa', 'he', 'pe', 'sh', 'k', 'a', 'au', 'd', 'du', 'sp', 'spd', 'y', 'so'];
+  const STATUS_ORDER = ['p', 'f', 'c', 'pa', 'he', 'pe', 'sh', 'k', 'a', 'd', 'sp', 'y', 'so'];
 
   function sortByRulebookOrder(keys) {
     const known = STATUS_ORDER.filter((k) => keys.includes(k));
@@ -101,8 +99,29 @@
   const HIDDEN_KEYS = new Set(['dw']);
   const CORE_KEYS = new Set(['i', 'h', 'hb', 's', 'sb', 'sd']);
 
+  function getStandardSkillName(el) {
+    const dName = el.querySelector('.d-name');
+    if (dName) return dName.textContent.trim().replace(/[《》！]/g, '');
+    return (el.textContent || '').trim().replace(/！/g, '');
+  }
+
+  function getCustomSkillName(el) {
+    const clone = el.cloneNode(true);
+    clone.querySelectorAll('.d-name').forEach((n) => n.remove());
+    return clone.textContent.trim().replace(/！/g, '');
+  }
+
   function defFor(key) {
     return STATUS_DEFS[key] || { name: key, icon: null, kind: 'unknown', desc: '（説明未登録の状態です。実際の効果と異なる場合があります）' };
+  }
+
+  const DUAL_SIGN_KEYS = { a: 'au', d: 'du', sp: 'spd' };
+
+  function buildNameIndex(units) {
+    const nameToIndex = {};
+    Object.values(units).forEach((u) => { nameToIndex[u.name] = u.index; });
+    const namesByLength = Object.keys(nameToIndex).sort((a, b) => b.length - a.length);
+    return { nameToIndex, namesByLength };
   }
 
   /* =========================================================================
@@ -214,12 +233,116 @@
     return turns;
   }
 
-  // ユニットごとの「〇〇の行動！」（連続行動時は2回以上）の回数をターン別に集計。
-  // 「〇〇 の 自動行動！」（受動効果）や「〇〇 と △△ のチェインスキル！」は対象外。
+  function collectActionDigest(turns) {
+    const digest = [];
+    const roundEls = document.querySelectorAll('section.round');
+    roundEls.forEach((roundEl, turnIdx) => {
+      const entries = [];
+
+      const extractSkillNames = (scopeEl) => [...scopeEl.querySelectorAll('.skill-name, .link-skill-name')]
+        .filter((el) => !el.closest('.passive-text') && !el.closest('.link-text'))
+        .map(getStandardSkillName)
+        .filter(Boolean);
+
+      roundEl.querySelectorAll('section.turns > section.turn').forEach((turnEl) => {
+        const actorSpan = turnEl.querySelector(':scope > span.actor');
+        if (!actorSpan) return;
+        const actorText = (actorSpan.textContent || '').trim();
+        if (!actorText.endsWith('の行動！')) return;
+        const actorName = actorText.replace(/の行動！$/, '');
+        entries.push({ actor: actorName, skills: [...new Set(extractSkillNames(turnEl))], active: true });
+      });
+
+      roundEl.querySelectorAll('section.passive-area section.passive-text > span.actor').forEach((actorSpan) => {
+        const actorText = (actorSpan.textContent || '').trim();
+        if (!actorText.endsWith(' の 自動行動！')) return;
+        const actorName = actorText.replace(/ の 自動行動！$/, '');
+        const scopeEl = actorSpan.parentElement;
+        const skills = [...scopeEl.querySelectorAll(':scope > .skill-name, :scope > .link-skill-name')]
+          .map(getStandardSkillName)
+          .filter(Boolean);
+        entries.push({ actor: actorName, skills: [...new Set(skills)], active: false });
+      });
+
+      roundEl.querySelectorAll('section.link-action .link-text > span.actor').forEach((actorSpan) => {
+        const actorText = (actorSpan.textContent || '').trim();
+        const m = actorText.match(/^(.+?) と (.+?) のチェインスキル！$/);
+        if (!m) return;
+        entries.push({ actor: m[1], skills: ['チェインスキル'], active: false });
+        entries.push({ actor: m[2], skills: ['チェインスキル'], active: false });
+      });
+
+      digest.push({
+        label: (turns[turnIdx] && turns[turnIdx].label) || `T${turnIdx + 1}`,
+        count: entries.filter((e) => e.active).length,
+        entries,
+      });
+    });
+    return digest;
+  }
+
+  function filterDigestForUnit(digest, unitName) {
+    return digest.map((d) => {
+      const entries = d.entries.filter((e) => e.actor === unitName);
+      return { label: d.label, count: entries.filter((e) => e.active).length, entries };
+    });
+  }
+
+  function buildActionDigestTable(digest) {
+    const table = document.createElement('table');
+    table.className = 'lc-turn-table lc-digest-table';
+
+    const thead = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    ['ターン', '行動数', '発動スキル'].forEach((text) => {
+      const th = document.createElement('th');
+      th.textContent = text;
+      headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    const maxCount = Math.max(1, ...digest.map((d) => d.count));
+
+    const tbody = document.createElement('tbody');
+    digest.forEach((d) => {
+      const tr = document.createElement('tr');
+
+      const turnTd = document.createElement('th');
+      turnTd.className = 'lc-turn-label-cell';
+      turnTd.textContent = d.label;
+      tr.appendChild(turnTd);
+
+      const countTd = document.createElement('td');
+      countTd.textContent = String(d.count);
+      if (d.count) countTd.style.background = heatColor(d.count, maxCount, 'info');
+      tr.appendChild(countTd);
+
+      const listTd = document.createElement('td');
+      listTd.className = 'lc-digest-list';
+      if (d.entries.length === 0) {
+        listTd.textContent = '-';
+      } else {
+        d.entries.forEach((entry) => {
+          const line = document.createElement('div');
+          line.className = `lc-digest-entry ${entry.active ? 'lc-digest-active' : 'lc-digest-passive'}`;
+          const skillSpan = document.createElement('span');
+          skillSpan.className = 'lc-digest-skill';
+          skillSpan.textContent = entry.skills.length ? entry.skills.join(' / ') : '（不明）';
+          line.appendChild(skillSpan);
+          listTd.appendChild(line);
+        });
+      }
+      tr.appendChild(listTd);
+
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    return table;
+  }
+
   function collectActionCounts(units, turns) {
-    const nameToIndex = {};
-    Object.values(units).forEach((u) => { nameToIndex[u.name] = u.index; });
-    const namesByLength = Object.keys(nameToIndex).sort((a, b) => b.length - a.length);
+    const { nameToIndex, namesByLength } = buildNameIndex(units);
 
     const perTurn = {};
     Object.values(units).forEach((u) => {
@@ -230,7 +353,7 @@
     roundEls.forEach((roundEl, turnIdx) => {
       roundEl.querySelectorAll('section.turns > section.turn > span.actor').forEach((el) => {
         const text = (el.textContent || '').trim();
-        if (!text.endsWith('の行動！')) return; // 「の自動行動！」「のチェインスキル！」を除外
+        if (!text.endsWith('の行動！')) return;
         const name = namesByLength.find((n) => text === `${n}の行動！`);
         if (!name) return;
         const idx = nameToIndex[name];
@@ -242,14 +365,10 @@
   }
 
   function collectHitCounts(units, turns) {
-    const nameToIndex = {};
-    Object.values(units).forEach((u) => { nameToIndex[u.name] = u.index; });
-    const namesByLength = Object.keys(nameToIndex).sort((a, b) => b.length - a.length);
+    const { nameToIndex, namesByLength } = buildNameIndex(units);
 
-    const total = {};
     const perTurn = {};
     Object.values(units).forEach((u) => {
-      total[u.index] = 0;
       perTurn[u.index] = turns.map(() => 0);
     });
 
@@ -261,18 +380,181 @@
         const name = namesByLength.find((n) => text.startsWith(n + 'は'));
         if (!name) return;
         const idx = nameToIndex[name];
-        total[idx] = (total[idx] || 0) + 1;
         if (perTurn[idx] && perTurn[idx][turnIdx] !== undefined) perTurn[idx][turnIdx] += 1;
       });
     });
 
-    return { total, perTurn };
+    return { perTurn };
+  }
+
+  function collectGrantedStatus(units, turns) {
+    const { nameToIndex, namesByLength } = buildNameIndex(units);
+    const nameToKey = {};
+    Object.entries(STATUS_DEFS).forEach(([key, def]) => { nameToKey[def.name] = key; });
+
+    const perTurn = {};
+    Object.values(units).forEach((u) => {
+      perTurn[u.index] = turns.map(() => ({}));
+    });
+
+    function addGrant(idx, turnIdx, statusName, amount) {
+      let key = nameToKey[statusName];
+      if (!key) return;
+      if (DUAL_SIGN_KEYS[key] && amount < 0) {
+        key = DUAL_SIGN_KEYS[key];
+        amount = -amount;
+      }
+      const bucket = perTurn[idx][turnIdx];
+      bucket[key] = (bucket[key] || 0) + amount;
+    }
+
+    function extractGrants(resultEls) {
+      const events = [];
+      resultEls.forEach((el) => {
+        const text = el.textContent || '';
+        if (!text.includes('付与！')) return;
+        const bEl = el.querySelector('b');
+        if (!bEl) return;
+        const numEl = el.querySelector('span[class*="heal"], span[class*="damage"]');
+        if (!numEl) return;
+        const num = parseInt(numEl.textContent, 10);
+        if (Number.isNaN(num)) return;
+        events.push({ name: bEl.textContent.trim(), num });
+      });
+      return events;
+    }
+
+    const roundEls = document.querySelectorAll('section.round');
+    roundEls.forEach((roundEl, turnIdx) => {
+      roundEl.querySelectorAll('section.turns > section.turn').forEach((turnEl) => {
+        const actorSpan = turnEl.querySelector(':scope > span.actor');
+        if (!actorSpan) return;
+        const actorText = (actorSpan.textContent || '').trim();
+        if (!actorText.endsWith('の行動！')) return;
+        const name = namesByLength.find((n) => actorText === `${n}の行動！`);
+        if (!name) return;
+        const idx = nameToIndex[name];
+        const resultEls = [...turnEl.querySelectorAll('.result')]
+          .filter((el) => !el.closest('.passive-text') && !el.closest('.link-text'));
+        extractGrants(resultEls).forEach((ev) => addGrant(idx, turnIdx, ev.name, ev.num));
+      });
+
+      roundEl.querySelectorAll('section.passive-area section.passive-text > span.actor').forEach((actorSpan) => {
+        const actorText = (actorSpan.textContent || '').trim();
+        if (!actorText.endsWith(' の 自動行動！')) return;
+        const name = namesByLength.find((n) => actorText === `${n} の 自動行動！`);
+        if (!name) return;
+        const idx = nameToIndex[name];
+        const scopeEl = actorSpan.parentElement;
+        const resultEls = [...scopeEl.querySelectorAll(':scope > .result')];
+        extractGrants(resultEls).forEach((ev) => addGrant(idx, turnIdx, ev.name, ev.num));
+      });
+    });
+
+    return { perTurn };
+  }
+
+  function collectHealGiven(units, turns) {
+    const { nameToIndex, namesByLength } = buildNameIndex(units);
+
+    const perTurn = {};
+    Object.values(units).forEach((u) => {
+      perTurn[u.index] = turns.map(() => 0);
+    });
+
+    const roundEls = document.querySelectorAll('section.round');
+    roundEls.forEach((roundEl, turnIdx) => {
+      roundEl.querySelectorAll('section.turns > section.turn').forEach((turnEl) => {
+        const actorSpan = turnEl.querySelector(':scope > span.actor');
+        if (!actorSpan) return;
+        const actorText = (actorSpan.textContent || '').trim();
+        if (!actorText.endsWith('の行動！')) return;
+        const name = namesByLength.find((n) => actorText === `${n}の行動！`);
+        if (!name) return;
+        const idx = nameToIndex[name];
+        turnEl.querySelectorAll('.result').forEach((el) => {
+          const text = (el.textContent || '').trim();
+          if (!text.includes('回復した！')) return;
+          const span = el.querySelector('span[class*="heal"]');
+          if (!span) return;
+          const num = parseInt(span.textContent, 10);
+          if (Number.isNaN(num)) return;
+          if (perTurn[idx] && perTurn[idx][turnIdx] !== undefined) perTurn[idx][turnIdx] += num;
+        });
+      });
+    });
+
+    return { perTurn };
+  }
+
+  function collectMaxHp(units) {
+    const { nameToIndex } = buildNameIndex(units);
+
+    const maxHpByIndex = {};
+    document.querySelectorAll('.box .text').forEach((el) => {
+      const nameEl = el.querySelector('.name');
+      if (!nameEl) return;
+      const name = nameEl.textContent.trim();
+      const idx = nameToIndex[name];
+      if (idx === undefined) return;
+      const m = (el.textContent || '').match(/HP:\d+\/(\d+)/);
+      if (!m) return;
+      maxHpByIndex[idx] = Number(m[1]);
+    });
+    return maxHpByIndex;
+  }
+
+  function collectHpChanges(units, turns) {
+    const { nameToIndex, namesByLength } = buildNameIndex(units);
+
+    const dmgHitPerTurn = {};
+    const dmgPoisonPerTurn = {};
+    const healSkillPerTurn = {};
+    const healTickPerTurn = {};
+    Object.values(units).forEach((u) => {
+      dmgHitPerTurn[u.index] = turns.map(() => 0);
+      dmgPoisonPerTurn[u.index] = turns.map(() => 0);
+      healSkillPerTurn[u.index] = turns.map(() => 0);
+      healTickPerTurn[u.index] = turns.map(() => 0);
+    });
+
+    function process(el, turnIdx) {
+      const text = (el.textContent || '').trim();
+      const isDamage = text.includes('のダメージを受けた！');
+      const isHeal = !isDamage && text.includes('回復した！');
+      if (!isDamage && !isHeal) return;
+      const span = el.querySelector(isDamage ? 'span[class*="damage"]' : 'span[class*="heal"]');
+      if (!span) return;
+      const num = parseInt(span.textContent, 10);
+      if (Number.isNaN(num)) return;
+      const name = namesByLength.find((n) => text.startsWith(n));
+      if (!name) return;
+      const idx = nameToIndex[name];
+      if (isHeal) {
+        if (el.classList.contains('depth-result')) {
+          healTickPerTurn[idx][turnIdx] += num;
+        } else {
+          healSkillPerTurn[idx][turnIdx] += num;
+        }
+        return;
+      }
+      if (el.classList.contains('depth-result')) {
+        dmgPoisonPerTurn[idx][turnIdx] += num;
+      } else {
+        dmgHitPerTurn[idx][turnIdx] += num;
+      }
+    }
+
+    const roundEls = document.querySelectorAll('section.round');
+    roundEls.forEach((roundEl, turnIdx) => {
+      roundEl.querySelectorAll('.result, .depth-result').forEach((el) => process(el, turnIdx));
+    });
+
+    return { dmgHitPerTurn, dmgPoisonPerTurn, healSkillPerTurn, healTickPerTurn };
   }
 
   function collectPeaceHeatGains(units, turns) {
-    const nameToIndex = {};
-    Object.values(units).forEach((u) => { nameToIndex[u.name] = u.index; });
-    const namesByLength = Object.keys(nameToIndex).sort((a, b) => b.length - a.length);
+    const { nameToIndex, namesByLength } = buildNameIndex(units);
 
     const perTurn = {};
     Object.values(units).forEach((u) => {
@@ -298,6 +580,29 @@
     return { perTurn };
   }
 
+  function collectSkillNameMap() {
+    const map = {};
+    document.querySelectorAll('.skill-name, .skill-name-enemy, .link-skill-name').forEach((el) => {
+      const dName = el.querySelector('.d-name');
+      if (!dName) return;
+      const custom = getCustomSkillName(el);
+      const standard = getStandardSkillName(el);
+      if (custom && standard) map[custom] = standard;
+    });
+    return map;
+  }
+
+  function relabelSkillNameCells(nameMap) {
+    document.querySelectorAll('.skill-name-cell').forEach((cell) => {
+      const m = cell.textContent.trim().match(/^(┗\s*)(.+?)(\s*\(\d+\))$/);
+      if (!m) return;
+      const standard = nameMap[m[2]];
+      if (standard && standard !== m[2]) {
+        cell.textContent = `${m[1]}${standard}${m[3]}`;
+      }
+    });
+  }
+
   function collectSkillBreakdown() {
     const nameToKind = {};
     Object.values(STATUS_DEFS).forEach((def) => { nameToKind[def.name] = def.kind; });
@@ -312,7 +617,7 @@
       if (!actionEl) return;
       const skillEl = actionEl.querySelector(':scope > .skill-name, :scope > .skill-name-enemy');
       if (!skillEl) return;
-      const skillName = skillEl.textContent.replace(/！\s*$/, '').trim();
+      const skillName = getCustomSkillName(skillEl);
       if (!skillName) return;
 
       const use = { buff: {}, debuff: {} };
@@ -348,40 +653,6 @@
    * 3. 状態アイコン＋ツールチップの生成
    * ========================================================================= */
 
-  function makeStatusBadge(key, compact) {
-    const def = defFor(key);
-    const badge = document.createElement('span');
-    badge.className = `lc-status-badge lc-kind-${def.kind}${compact ? ' lc-status-compact' : ''}`;
-    badge.setAttribute('data-lc-tooltip', `${def.name}\n${def.desc}`);
-
-    if (def.icon) {
-      const img = document.createElement('img');
-      img.className = 'lc-status-icon-img';
-      img.loading = 'lazy';
-      img.decoding = 'async';
-      img.alt = def.name;
-      img.src = ICON_BASE + def.icon + '.gif';
-      img.onerror = () => {
-        img.remove();
-        badge.classList.add('lc-status-fallback');
-        if (compact) badge.prepend(document.createTextNode(def.name.slice(0, 1)));
-      };
-      badge.appendChild(img);
-    } else {
-      badge.classList.add('lc-status-fallback');
-      if (compact) badge.appendChild(document.createTextNode(def.name.slice(0, 1)));
-    }
-
-    if (!compact) {
-      const label = document.createElement('span');
-      label.className = 'lc-status-label';
-      label.textContent = def.name;
-      badge.appendChild(label);
-    }
-
-    return badge;
-  }
-
   function makeStatusHeaderLabel(key) {
     const def = defFor(key);
     const el = document.createElement('span');
@@ -391,13 +662,26 @@
     return el;
   }
 
+  function makeSimpleHeaderLabel(text, kind) {
+    const el = document.createElement('span');
+    el.className = `lc-status-text-label lc-kind-${kind}`;
+    el.textContent = text;
+    return el;
+  }
+
+  function appendHeaderCell(headRow, label) {
+    const th = document.createElement('th');
+    th.appendChild(label);
+    headRow.appendChild(th);
+  }
+
   /* =========================================================================
    * 4. ユニットごとのターン推移テーブル
    * ========================================================================= */
 
   const SP_MAX = 300;
 
-  function buildUnitTurnTable(unit, turns, hitCounts, peaceHeatGains, actionCounts) {
+  function buildUnitTurnTableA(unit, turns, peaceHeatGains, actionCounts) {
     const seenKeysRaw = [];
     turns.forEach((t) => {
       const obj = t.byUnit[unit.index];
@@ -408,7 +692,15 @@
       });
     });
     const seenKeys = sortByRulebookOrder([...new Set([...STATUS_ORDER, ...seenKeysRaw])]);
-    const perTurnHits = (hitCounts && hitCounts.perTurn[unit.index]) || turns.map(() => 0);
+    const columns = [];
+    seenKeys.forEach((key) => {
+      if (DUAL_SIGN_KEYS[key]) {
+        columns.push({ id: `${key}:pos`, key, sign: 1 });
+        columns.push({ id: `${key}:neg`, key, sign: -1 });
+      } else {
+        columns.push({ id: key, key, sign: 0 });
+      }
+    });
     const perTurnPeaceGain = (peaceHeatGains && peaceHeatGains.perTurn[unit.index]) || turns.map(() => 0);
     const perTurnActionCount = (actionCounts && actionCounts.perTurn[unit.index]) || turns.map(() => 0);
 
@@ -422,46 +714,32 @@
     turnTh.textContent = 'ターン';
     headRow.appendChild(turnTh);
 
-    const actionCountTh = document.createElement('th');
-    const actionCountLabel = document.createElement('span');
-    actionCountLabel.className = 'lc-status-text-label lc-kind-info';
-    actionCountLabel.textContent = '行動数';
-    actionCountTh.appendChild(actionCountLabel);
-    headRow.appendChild(actionCountTh);
+    appendHeaderCell(headRow, makeSimpleHeaderLabel('行動数', 'info'));
 
     const spTh = document.createElement('th');
     spTh.textContent = 'SP';
     headRow.appendChild(spTh);
 
-    const hitTh = document.createElement('th');
-    const hitLabel = document.createElement('span');
-    hitLabel.className = 'lc-status-text-label lc-kind-info';
-    hitLabel.textContent = '被弾数';
-    hitTh.appendChild(hitLabel);
-    headRow.appendChild(hitTh);
-
-    seenKeys.forEach((key) => {
+    columns.forEach((col) => {
       const th = document.createElement('th');
-      th.appendChild(makeStatusHeaderLabel(key));
+      th.appendChild(makeStatusHeaderLabel(col.sign < 0 ? DUAL_SIGN_KEYS[col.key] : col.key));
       headRow.appendChild(th);
     });
 
     thead.appendChild(headRow);
     table.appendChild(thead);
 
-    // --- 各キーの最大値（背景の濃淡用） ---
-    const maxByKey = {};
-    seenKeys.forEach((key) => {
+    const maxByCol = {};
+    columns.forEach((col) => {
       const vals = turns
-        .map((t) => t.byUnit[unit.index] && t.byUnit[unit.index][key])
+        .map((t) => t.byUnit[unit.index] && t.byUnit[unit.index][col.key])
         .filter((v) => v !== undefined && v !== null)
+        .filter((v) => (col.sign === 0 ? true : col.sign > 0 ? v > 0 : v < 0))
         .map(Math.abs);
-      maxByKey[key] = Math.max(1, ...vals, 0);
+      maxByCol[col.id] = Math.max(1, ...vals, 0);
     });
-    const maxHit = Math.max(1, ...perTurnHits);
     const maxActionCount = Math.max(1, ...perTurnActionCount);
 
-    // --- ターンごとの行 ---
     const tbody = document.createElement('tbody');
     turns.forEach((t, turnIdx) => {
       const obj = t.byUnit[unit.index];
@@ -472,46 +750,42 @@
       turnTd.textContent = t.label;
       tr.appendChild(turnTd);
 
-      // 行動数（このターンでのこのユニット自身の行動回数。通常1、連続行動発生時は2以上）
       const actionCountTd = document.createElement('td');
       const actCount = perTurnActionCount[turnIdx] || 0;
       actionCountTd.textContent = String(actCount);
       if (actCount >= 2) actionCountTd.style.background = heatColor(actCount, maxActionCount, 'info');
       tr.appendChild(actionCountTd);
 
-      // SP
       const spTd = document.createElement('td');
       if (obj && obj.s !== undefined) {
         const slv = Math.max(0, Math.min(3, Math.floor(obj.s / 100)));
         spTd.textContent = String(obj.s);
-        spTd.setAttribute(
-          'data-lc-tooltip',
-          `SLv${slv}（SP ${obj.s} / ${SP_MAX}）\nゲージ: ${obj.sb ?? 0}%\n次のSLvまで: ${Math.max(0, (slv + 1) * 100 - obj.s)}`
-        );
         spTd.classList.add(`lc-slv-${slv}`);
       } else {
         spTd.textContent = '-';
       }
       tr.appendChild(spTd);
 
-      // 被弾数
-      const hitTd = document.createElement('td');
-      const hitVal = perTurnHits[turnIdx] || 0;
-      hitTd.textContent = hitVal ? String(hitVal) : '-';
-      if (hitVal) hitTd.style.background = heatColor(hitVal, maxHit, 'info');
-      tr.appendChild(hitTd);
-
-      // 状態異常/バフデバフ
-      seenKeys.forEach((key) => {
+      columns.forEach((col) => {
         const td = document.createElement('td');
-        const v = obj && obj[key] !== undefined ? obj[key] : null;
+        const raw = obj && obj[col.key] !== undefined ? obj[col.key] : null;
+        let v = raw;
+        if (raw !== null && col.sign !== 0) {
+          v = (col.sign > 0 ? raw > 0 : raw < 0) ? raw : null;
+        }
         if (v === null) {
           td.textContent = '-';
         } else {
-          td.textContent = String(v);
-          td.style.background = heatColor(Math.abs(v), maxByKey[key], defFor(key).kind);
+          const displayVal = Math.abs(v);
+          const kind = col.sign < 0 ? defFor(DUAL_SIGN_KEYS[col.key]).kind : defFor(col.key).kind;
+          td.textContent = String(displayVal);
+          td.style.background = heatColor(displayVal, maxByCol[col.id], kind);
+          if (col.sign < 0) {
+            const negDef = defFor(DUAL_SIGN_KEYS[col.key]);
+            td.setAttribute('data-lc-tooltip', `${negDef.name}\n${negDef.desc}`);
+          }
         }
-        if (key === 'pe') {
+        if (col.key === 'pe') {
           const gain = perTurnPeaceGain[turnIdx] || 0;
           if (gain) {
             td.setAttribute('data-lc-tooltip', `連続増: +${gain}`);
@@ -519,6 +793,258 @@
         }
         tr.appendChild(td);
       });
+
+      tbody.appendChild(tr);
+    });
+
+    table.appendChild(tbody);
+    return table;
+  }
+
+  // D面：状態異常[与]（自身の行動で他者/自身に付与した状態異常・バフデバフの量）
+  function buildUnitTurnTableD(unit, turns, grantedStatus, actionCounts) {
+    const perTurnGrant = (grantedStatus && grantedStatus.perTurn[unit.index]) || turns.map(() => ({}));
+
+    const seenKeysRaw = [];
+    perTurnGrant.forEach((bucket) => {
+      Object.keys(bucket).forEach((k) => { if (!seenKeysRaw.includes(k)) seenKeysRaw.push(k); });
+    });
+    const seenKeys = sortByRulebookOrder([...new Set([...STATUS_ORDER, ...seenKeysRaw])]);
+    const columns = [];
+    seenKeys.forEach((key) => {
+      if (DUAL_SIGN_KEYS[key]) {
+        columns.push({ id: `${key}:pos`, key, sign: 1 });
+        columns.push({ id: `${key}:neg`, key, sign: -1 });
+      } else {
+        columns.push({ id: key, key, sign: 0 });
+      }
+    });
+    const perTurnActionCount = (actionCounts && actionCounts.perTurn[unit.index]) || turns.map(() => 0);
+
+    const table = document.createElement('table');
+    table.className = 'lc-turn-table';
+
+    const thead = document.createElement('thead');
+    const headRow = document.createElement('tr');
+
+    const turnTh = document.createElement('th');
+    turnTh.textContent = 'ターン';
+    headRow.appendChild(turnTh);
+
+    appendHeaderCell(headRow, makeSimpleHeaderLabel('行動数', 'info'));
+
+    const spTh = document.createElement('th');
+    spTh.textContent = 'SP';
+    headRow.appendChild(spTh);
+
+    columns.forEach((col) => {
+      const th = document.createElement('th');
+      th.appendChild(makeStatusHeaderLabel(col.sign < 0 ? DUAL_SIGN_KEYS[col.key] : col.key));
+      headRow.appendChild(th);
+    });
+
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    const maxByCol = {};
+    columns.forEach((col) => {
+      const vals = perTurnGrant
+        .map((bucket) => bucket[col.key])
+        .filter((v) => v !== undefined && v !== null)
+        .filter((v) => (col.sign === 0 ? true : col.sign > 0 ? v > 0 : v < 0))
+        .map(Math.abs);
+      maxByCol[col.id] = Math.max(1, ...vals, 0);
+    });
+    const maxActionCount = Math.max(1, ...perTurnActionCount);
+
+    const tbody = document.createElement('tbody');
+    turns.forEach((t, turnIdx) => {
+      const bucket = perTurnGrant[turnIdx] || {};
+      const tr = document.createElement('tr');
+
+      const turnTd = document.createElement('th');
+      turnTd.className = 'lc-turn-label-cell';
+      turnTd.textContent = t.label;
+      tr.appendChild(turnTd);
+
+      const actionCountTd = document.createElement('td');
+      const actCount = perTurnActionCount[turnIdx] || 0;
+      actionCountTd.textContent = String(actCount);
+      if (actCount >= 2) actionCountTd.style.background = heatColor(actCount, maxActionCount, 'info');
+      tr.appendChild(actionCountTd);
+
+      const spTd = document.createElement('td');
+      const obj = t.byUnit[unit.index];
+      if (obj && obj.s !== undefined) {
+        const slv = Math.max(0, Math.min(3, Math.floor(obj.s / 100)));
+        spTd.textContent = String(obj.s);
+        spTd.classList.add(`lc-slv-${slv}`);
+      } else {
+        spTd.textContent = '-';
+      }
+      tr.appendChild(spTd);
+
+      columns.forEach((col) => {
+        const td = document.createElement('td');
+        const raw = bucket[col.key] !== undefined ? bucket[col.key] : null;
+        let v = raw;
+        if (raw !== null && col.sign !== 0) {
+          v = (col.sign > 0 ? raw > 0 : raw < 0) ? raw : null;
+        }
+        if (v === null) {
+          td.textContent = '-';
+        } else {
+          const displayVal = Math.abs(v);
+          const kind = col.sign < 0 ? defFor(DUAL_SIGN_KEYS[col.key]).kind : defFor(col.key).kind;
+          td.textContent = String(displayVal);
+          td.style.background = heatColor(displayVal, maxByCol[col.id], kind);
+          if (col.sign < 0) {
+            const negDef = defFor(DUAL_SIGN_KEYS[col.key]);
+            td.setAttribute('data-lc-tooltip', `${negDef.name}\n${negDef.desc}`);
+          }
+        }
+        tr.appendChild(td);
+      });
+
+      tbody.appendChild(tr);
+    });
+
+    table.appendChild(tbody);
+    return table;
+  }
+
+  function buildUnitTurnTableB(unit, turns, hitCounts, hpChanges, actionCounts, healGiven, maxHpByIndex) {
+    const perTurnHits = (hitCounts && hitCounts.perTurn[unit.index]) || turns.map(() => 0);
+    const perTurnHit = (hpChanges && hpChanges.dmgHitPerTurn[unit.index]) || turns.map(() => 0);
+    const perTurnPoison = (hpChanges && hpChanges.dmgPoisonPerTurn[unit.index]) || turns.map(() => 0);
+    const perTurnHealSkill = (hpChanges && hpChanges.healSkillPerTurn[unit.index]) || turns.map(() => 0);
+    const perTurnHealTick = (hpChanges && hpChanges.healTickPerTurn[unit.index]) || turns.map(() => 0);
+    const perTurnHealGiven = (healGiven && healGiven.perTurn[unit.index]) || turns.map(() => 0);
+    const perTurnActionCount = (actionCounts && actionCounts.perTurn[unit.index]) || turns.map(() => 0);
+    const perTurnActualDrop = turns.map((t, i) => {
+      const cur = t.byUnit[unit.index] && t.byUnit[unit.index].h;
+      const prevT = turns[i - 1];
+      const prev = prevT && prevT.byUnit[unit.index] && prevT.byUnit[unit.index].h;
+      if (cur === undefined || prev === undefined) return 0;
+      return Math.max(0, prev - cur);
+    });
+
+    const table = document.createElement('table');
+    table.className = 'lc-turn-table';
+
+    const thead = document.createElement('thead');
+    const headRow = document.createElement('tr');
+
+    const turnTh = document.createElement('th');
+    turnTh.textContent = 'ターン';
+    headRow.appendChild(turnTh);
+
+    appendHeaderCell(headRow, makeSimpleHeaderLabel('行動数', 'info'));
+
+    const spTh = document.createElement('th');
+    spTh.textContent = 'SP';
+    headRow.appendChild(spTh);
+
+    appendHeaderCell(headRow, makeSimpleHeaderLabel('HP', 'info'));
+    appendHeaderCell(headRow, makeSimpleHeaderLabel('与回復', 'good'));
+    appendHeaderCell(headRow, makeSimpleHeaderLabel('被回復', 'good'));
+    appendHeaderCell(headRow, makeSimpleHeaderLabel('治癒', 'good'));
+    appendHeaderCell(headRow, makeSimpleHeaderLabel('被弾数', 'info'));
+    appendHeaderCell(headRow, makeSimpleHeaderLabel('被ダメ', 'bad'));
+    appendHeaderCell(headRow, makeSimpleHeaderLabel('毒ダメ', 'bad'));
+
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    const maxHealSkill = Math.max(1, ...perTurnHealSkill);
+    const maxHealTick = Math.max(1, ...perTurnHealTick);
+    const maxHealGiven = Math.max(1, ...perTurnHealGiven);
+    const maxHitDmg = Math.max(1, ...perTurnHit);
+    const maxPoisonDmg = Math.max(1, ...perTurnPoison);
+    const maxHitCount = Math.max(1, ...perTurnHits);
+    const maxActionCount = Math.max(1, ...perTurnActionCount);
+    const maxDecrease = Math.max(1, ...perTurnActualDrop);
+
+    const tbody = document.createElement('tbody');
+    turns.forEach((t, turnIdx) => {
+      const obj = t.byUnit[unit.index];
+      const tr = document.createElement('tr');
+
+      const turnTd = document.createElement('th');
+      turnTd.className = 'lc-turn-label-cell';
+      turnTd.textContent = t.label;
+      tr.appendChild(turnTd);
+
+      const actionCountTd = document.createElement('td');
+      const actCount = perTurnActionCount[turnIdx] || 0;
+      actionCountTd.textContent = String(actCount);
+      if (actCount >= 2) actionCountTd.style.background = heatColor(actCount, maxActionCount, 'info');
+      tr.appendChild(actionCountTd);
+
+      const spTd = document.createElement('td');
+      if (obj && obj.s !== undefined) {
+        const slv = Math.max(0, Math.min(3, Math.floor(obj.s / 100)));
+        spTd.textContent = String(obj.s);
+        spTd.classList.add(`lc-slv-${slv}`);
+      } else {
+        spTd.textContent = '-';
+      }
+      tr.appendChild(spTd);
+
+      const hpTd = document.createElement('td');
+      hpTd.textContent = obj && obj.h !== undefined ? String(obj.h) : '-';
+      const decreaseVal = perTurnActualDrop[turnIdx] || 0;
+      const mhp = maxHpByIndex && maxHpByIndex[unit.index];
+      if (decreaseVal && mhp) {
+        const decreasePct = Math.min(100, (decreaseVal / mhp) * 100);
+        hpTd.style.background = heatColor(decreasePct, 100, 'bad');
+      } else if (decreaseVal) {
+        hpTd.style.background = heatColor(decreaseVal, maxDecrease, 'bad');
+      }
+      if (mhp !== undefined) hpTd.setAttribute('data-lc-tooltip', `MHP: ${mhp}`);
+      tr.appendChild(hpTd);
+
+      const healGivenTd = document.createElement('td');
+      const healGivenVal = perTurnHealGiven[turnIdx] || 0;
+      healGivenTd.textContent = healGivenVal ? String(healGivenVal) : '-';
+      if (healGivenVal) healGivenTd.style.background = heatColor(healGivenVal, maxHealGiven, 'good');
+      tr.appendChild(healGivenTd);
+
+      const healTd = document.createElement('td');
+      const healVal = perTurnHealSkill[turnIdx] || 0;
+      healTd.textContent = healVal ? String(healVal) : '-';
+      if (healVal) healTd.style.background = heatColor(healVal, maxHealSkill, 'good');
+      tr.appendChild(healTd);
+
+      const healTickTd = document.createElement('td');
+      const healTickVal = perTurnHealTick[turnIdx] || 0;
+      healTickTd.textContent = healTickVal ? String(healTickVal) : '-';
+      if (healTickVal) healTickTd.style.background = heatColor(healTickVal, maxHealTick, 'good');
+      if (obj && obj.he !== undefined) {
+        healTickTd.setAttribute('data-lc-tooltip', `治癒: ${obj.he}`);
+      }
+      tr.appendChild(healTickTd);
+
+      const hitCountTd = document.createElement('td');
+      const hitCountVal = perTurnHits[turnIdx] || 0;
+      hitCountTd.textContent = hitCountVal ? String(hitCountVal) : '-';
+      if (hitCountVal) hitCountTd.style.background = heatColor(hitCountVal, maxHitCount, 'info');
+      tr.appendChild(hitCountTd);
+
+      const hitDmgTd = document.createElement('td');
+      const hitDmgVal = perTurnHit[turnIdx] || 0;
+      hitDmgTd.textContent = hitDmgVal ? String(hitDmgVal) : '-';
+      if (hitDmgVal) hitDmgTd.style.background = heatColor(hitDmgVal, maxHitDmg, 'bad');
+      tr.appendChild(hitDmgTd);
+
+      const poisonDmgTd = document.createElement('td');
+      const poisonDmgVal = perTurnPoison[turnIdx] || 0;
+      poisonDmgTd.textContent = poisonDmgVal ? String(poisonDmgVal) : '-';
+      if (poisonDmgVal) poisonDmgTd.style.background = heatColor(poisonDmgVal, maxPoisonDmg, 'bad');
+      if (obj && obj.p !== undefined) {
+        poisonDmgTd.setAttribute('data-lc-tooltip', `猛毒: ${obj.p}`);
+      }
+      tr.appendChild(poisonDmgTd);
 
       tbody.appendChild(tr);
     });
@@ -559,7 +1085,12 @@
     const hitCounts = collectHitCounts(units, turns);
     const peaceHeatGains = collectPeaceHeatGains(units, turns);
     const actionCounts = collectActionCounts(units, turns);
+    const hpChanges = collectHpChanges(units, turns);
+    const healGiven = collectHealGiven(units, turns);
+    const grantedStatus = collectGrantedStatus(units, turns);
+    const maxHpByIndex = collectMaxHp(units);
     const skillMap = collectSkillBreakdown();
+    const actionDigest = collectActionDigest(turns);
 
     const headerRow = table.querySelector('tbody tr.ally-row, tbody tr.enemy-row');
     const colCount = headerRow ? headerRow.children.length : 14;
@@ -588,14 +1119,74 @@
 
       const caption = document.createElement('div');
       caption.className = 'lc-turn-caption';
-      const totalHits = (hitCounts.total[unit.index]) || 0;
       caption.textContent = `◆ ${unit.name} のターン別推移`;
       td.appendChild(caption);
 
+      const tabBar = document.createElement('div');
+      tabBar.className = 'lc-panel-tabbar';
+      const tabA = document.createElement('button');
+      tabA.type = 'button';
+      tabA.className = 'lc-panel-tab lc-panel-tab-a';
+      tabA.textContent = '状態異常[被]';
+      const tabB = document.createElement('button');
+      tabB.type = 'button';
+      tabB.className = 'lc-panel-tab lc-panel-tab-b';
+      tabB.textContent = '詳細解析';
+      const tabC = document.createElement('button');
+      tabC.type = 'button';
+      tabC.className = 'lc-panel-tab lc-panel-tab-c';
+      tabC.textContent = '行動早見表';
+      const tabD = document.createElement('button');
+      tabD.type = 'button';
+      tabD.className = 'lc-panel-tab lc-panel-tab-d';
+      tabD.textContent = '状態異常[与]';
+      tabBar.appendChild(tabB);
+      tabBar.appendChild(tabA);
+      tabBar.appendChild(tabD);
+      tabBar.appendChild(tabC);
+      td.appendChild(tabBar);
+
       const wrap = document.createElement('div');
       wrap.className = 'lc-turn-table-wrap';
-      wrap.appendChild(buildUnitTurnTable(unit, turns, hitCounts, peaceHeatGains, actionCounts));
+
+      const panelA = document.createElement('div');
+      panelA.className = 'lc-panel lc-panel-a';
+      panelA.appendChild(buildUnitTurnTableA(unit, turns, peaceHeatGains, actionCounts));
+
+      const panelB = document.createElement('div');
+      panelB.className = 'lc-panel lc-panel-b';
+      panelB.appendChild(buildUnitTurnTableB(unit, turns, hitCounts, hpChanges, actionCounts, healGiven, maxHpByIndex));
+
+      const panelC = document.createElement('div');
+      panelC.className = 'lc-panel lc-panel-c';
+      panelC.appendChild(buildActionDigestTable(filterDigestForUnit(actionDigest, unit.name)));
+
+      const panelD = document.createElement('div');
+      panelD.className = 'lc-panel lc-panel-d';
+      panelD.appendChild(buildUnitTurnTableD(unit, turns, grantedStatus, actionCounts));
+
+      wrap.appendChild(panelA);
+      wrap.appendChild(panelB);
+      wrap.appendChild(panelC);
+      wrap.appendChild(panelD);
       td.appendChild(wrap);
+
+      function setLocalPanelMode(mode) {
+        panelA.style.display = mode === 'a' ? '' : 'none';
+        panelB.style.display = mode === 'b' ? '' : 'none';
+        panelC.style.display = mode === 'c' ? '' : 'none';
+        panelD.style.display = mode === 'd' ? '' : 'none';
+        tabA.classList.toggle('lc-active', mode === 'a');
+        tabB.classList.toggle('lc-active', mode === 'b');
+        tabC.classList.toggle('lc-active', mode === 'c');
+        tabD.classList.toggle('lc-active', mode === 'd');
+      }
+      setLocalPanelMode('b');
+
+      tabA.addEventListener('click', (e) => { e.stopPropagation(); setLocalPanelMode('a'); });
+      tabB.addEventListener('click', (e) => { e.stopPropagation(); setLocalPanelMode('b'); });
+      tabC.addEventListener('click', (e) => { e.stopPropagation(); setLocalPanelMode('c'); });
+      tabD.addEventListener('click', (e) => { e.stopPropagation(); setLocalPanelMode('d'); });
 
       turnRow.appendChild(td);
       insertAfter.insertAdjacentElement('afterend', turnRow);
@@ -605,7 +1196,8 @@
       });
     });
 
-    // 表の説明を一度だけ追加
+    relabelSkillNameCells(collectSkillNameMap());
+
     const wrapEl = table.closest('.battle-summary-table-wrap');
     if (wrapEl && !wrapEl.querySelector('.lc-summary-note')) {
       const note = document.createElement('p');
@@ -773,7 +1365,6 @@
 
       tr.lc-turn-row { display: none; }
       tr.lc-turn-row.lc-open { display: table-row; }
-      /* 展開行はサイト側の行ホバー演出（ally-row/enemy-row用）を継承してしまうため無効化 */
       tr.lc-turn-row:hover > td.lc-turn-cell,
       tr.lc-turn-row > td.lc-turn-cell:hover {
         background: rgba(0,0,0,0.15) !important;
@@ -782,6 +1373,29 @@
       }
       td.lc-turn-cell { background: rgba(0,0,0,0.15); padding: 10px 12px; cursor: default; }
       .lc-turn-caption { font-weight: bold; font-size: 1em; margin-bottom: 8px; }
+      .lc-digest-table td.lc-digest-list { text-align: left; padding: 6px 10px; }
+      .lc-digest-entry { padding: 2px 6px; border-left: 3px solid transparent; }
+      .lc-digest-entry + .lc-digest-entry { border-top: 1px dashed rgba(255,255,255,0.1); }
+      .lc-digest-entry.lc-digest-active { border-left-color: rgba(230,150,60,0.85); background: rgba(230,150,60,0.08); }
+      .lc-digest-entry.lc-digest-passive { border-left-color: rgba(90,150,220,0.85); background: rgba(90,150,220,0.08); }
+      .lc-digest-skill { opacity: 0.9; }
+      .lc-panel-tabbar { display: flex; gap: 6px; margin-bottom: 8px; }
+      .lc-panel-tab {
+        font-family: inherit;
+        font-size: 0.85em;
+        padding: 4px 12px;
+        border-radius: 6px;
+        border: 1px solid rgba(255,255,255,0.2);
+        background: rgba(255,255,255,0.05);
+        color: inherit;
+        cursor: pointer;
+      }
+      .lc-panel-tab:hover { background: rgba(255,255,255,0.12); }
+      .lc-panel-tab.lc-active {
+        background: rgba(80,150,255,0.35);
+        border-color: rgba(80,150,255,0.7);
+        font-weight: bold;
+      }
 
       .lc-turn-table-wrap { overflow-x: auto; }
       table.lc-turn-table {
@@ -827,31 +1441,6 @@
       .lc-kind-shield.lc-status-text-label { border-color: rgba(180,180,90,0.7); }
       .lc-kind-info.lc-status-text-label { border-color: rgba(80,150,255,0.75); }
 
-      .lc-status-badge {
-        position: relative;
-        display: inline-flex; align-items: center; gap: 6px;
-        cursor: help;
-        white-space: nowrap;
-      }
-      .lc-status-badge.lc-status-compact { gap: 0; }
-      .lc-status-icon-img {
-        width: 22px; height: 22px; object-fit: contain; image-rendering: pixelated;
-        flex: none;
-      }
-      .lc-status-fallback {
-        display: inline-flex; align-items: center; justify-content: center;
-        width: 22px; height: 22px; border-radius: 50%;
-        background: rgba(255,255,255,0.15); font-size: 0.8em;
-        flex: none;
-      }
-      .lc-status-label { font-size: 1em; white-space: nowrap; }
-      .lc-kind-bad .lc-status-fallback { background: rgba(220,80,80,0.35); }
-      .lc-kind-good .lc-status-fallback { background: rgba(90,190,120,0.35); }
-      .lc-kind-buff .lc-status-fallback { background: rgba(90,150,220,0.35); }
-      .lc-kind-debuff .lc-status-fallback { background: rgba(220,150,60,0.35); }
-      .lc-kind-shield .lc-status-fallback { background: rgba(180,180,90,0.35); }
-
-      .lc-status-badge[data-lc-tooltip],
       td[data-lc-tooltip] {
         cursor: help;
       }
@@ -879,7 +1468,6 @@
         visibility: visible;
       }
 
-      /* スキル別内訳の展開（使用回ごとの与バフ/与デバフ） */
       tr.lc-skill-row-expandable { cursor: pointer; }
       tr.lc-skill-row-expandable:hover { background: rgba(255,255,255,0.06); }
       tr.lc-skill-row-expandable .skill-name-cell::after {
