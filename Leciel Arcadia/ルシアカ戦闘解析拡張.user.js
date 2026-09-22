@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ルシアカ戦闘解析拡張
 // @namespace    lc-battle-analyzer
-// @version      1.2
+// @version      1.3
 // @description  戦闘結果画面の左側パネルにあるSP・連続値を実数表記にし、末尾の戦闘解析を拡張します
 // @author       ayautaginrei
 // @match        https://rarirupj.com/leciar/log*
@@ -90,11 +90,14 @@
 
   const STATUS_ORDER = ['p', 'f', 'c', 'pa', 'he', 'pe', 'sh', 'k', 'a', 'd', 'sp', 'y', 'so'];
 
-  function sortByRulebookOrder(keys) {
-    const known = STATUS_ORDER.filter((k) => keys.includes(k));
-    const unknown = keys.filter((k) => !STATUS_ORDER.includes(k));
+  function sortByRulebookOrder(keys, order) {
+    const rulebook = order || STATUS_ORDER;
+    const known = rulebook.filter((k) => keys.includes(k));
+    const unknown = keys.filter((k) => !rulebook.includes(k));
     return [...known, ...unknown];
   }
+
+  const GRANT_STATUS_ORDER = ['p', 'f', 'c', 'pa', 'he', 'pe', 'sh', 'k', 'a', 'au', 'd', 'du', 'sp', 'spd', 'y', 'so'];
 
   const HIDDEN_KEYS = new Set(['dw']);
   const CORE_KEYS = new Set(['i', 'h', 'hb', 's', 'sb', 'sd']);
@@ -111,6 +114,26 @@
     return clone.textContent.trim().replace(/！/g, '');
   }
 
+  function sumStatusPolarity(valuesObj) {
+    let good = 0;
+    let bad = 0;
+    Object.entries(valuesObj || {}).forEach(([key, v]) => {
+      if (v === undefined || v === null) return;
+      let kind;
+      let magnitude;
+      if (DUAL_SIGN_KEYS[key]) {
+        kind = v >= 0 ? defFor(key).kind : defFor(DUAL_SIGN_KEYS[key]).kind;
+        magnitude = Math.abs(v);
+      } else {
+        kind = defFor(key).kind;
+        magnitude = Math.abs(v);
+      }
+      if (kind === 'good' || kind === 'buff' || kind === 'shield') good += magnitude;
+      else if (kind === 'bad' || kind === 'debuff') bad += magnitude;
+    });
+    return { good, bad };
+  }
+
   function defFor(key) {
     return STATUS_DEFS[key] || { name: key, icon: null, kind: 'unknown', desc: '（説明未登録の状態です。実際の効果と異なる場合があります）' };
   }
@@ -122,6 +145,18 @@
     Object.values(units).forEach((u) => { nameToIndex[u.name] = u.index; });
     const namesByLength = Object.keys(nameToIndex).sort((a, b) => b.length - a.length);
     return { nameToIndex, namesByLength };
+  }
+
+  // 「◯◯の行動！」で始まるターン（手動行動）の行動主体を、ユニットindexに解決する。
+  // 該当しない場合はnullを返す。
+  function resolveManualActorIndex(turnEl, namesByLength, nameToIndex) {
+    const actorSpan = turnEl.querySelector(':scope > span.actor');
+    if (!actorSpan) return null;
+    const actorText = (actorSpan.textContent || '').trim();
+    if (!actorText.endsWith('の行動！')) return null;
+    const name = namesByLength.find((n) => actorText === `${n}の行動！`);
+    if (!name) return null;
+    return nameToIndex[name];
   }
 
   /* =========================================================================
@@ -235,14 +270,28 @@
 
   function collectActionDigest(turns) {
     const digest = [];
+
+    function closestPassiveTextAncestor(el) {
+      return el.parentElement ? el.parentElement.closest('.passive-text') : null;
+    }
+
+    // あるパッシブ発動（.passive-text）を起点に、そこから連鎖する下位のパッシブを
+    // 深さ付きのフラットなリストにする（depth 0 = 起点自身）。
+    function buildPassiveTree(passiveTextEl, depth, out) {
+      const own = [...passiveTextEl.querySelectorAll(':scope > .skill-name, :scope > .skill-name-enemy, :scope > .link-skill-name')]
+        .map(getStandardSkillName)
+        .filter(Boolean);
+      own.forEach((name) => out.push({ name, depth }));
+      const children = [...passiveTextEl.querySelectorAll('.passive-text')]
+        .filter((child) => closestPassiveTextAncestor(child) === passiveTextEl);
+      children.forEach((child) => buildPassiveTree(child, depth + 1, out));
+      return out;
+    }
+
     const roundEls = document.querySelectorAll('section.round');
     roundEls.forEach((roundEl, turnIdx) => {
       const entries = [];
-
-      const extractSkillNames = (scopeEl) => [...scopeEl.querySelectorAll('.skill-name, .link-skill-name')]
-        .filter((el) => !el.closest('.passive-text') && !el.closest('.link-text'))
-        .map(getStandardSkillName)
-        .filter(Boolean);
+      const namesOf = (els) => [...new Set(els.map(getStandardSkillName).filter(Boolean))];
 
       roundEl.querySelectorAll('section.turns > section.turn').forEach((turnEl) => {
         const actorSpan = turnEl.querySelector(':scope > span.actor');
@@ -250,31 +299,91 @@
         const actorText = (actorSpan.textContent || '').trim();
         if (!actorText.endsWith('の行動！')) return;
         const actorName = actorText.replace(/の行動！$/, '');
-        entries.push({ actor: actorName, skills: [...new Set(extractSkillNames(turnEl))], active: true });
+
+        const activeEls = [...turnEl.querySelectorAll('.skill-name, .skill-name-enemy, .link-skill-name')]
+          .filter((el) => !el.closest('.passive-text') && !el.closest('.link-text'));
+        const firstActiveEl = activeEls[0];
+
+        // 入れ子になっていない（連鎖の起点となる）パッシブのみを対象にする。
+        const topLevelPassiveTexts = [...turnEl.querySelectorAll('.passive-text')]
+          .filter((pt) => !closestPassiveTextAncestor(pt));
+
+        // 「自分行動前」型（アクティブより前に構造化される）は、
+        // インデントしない独立した行として扱う。それ以外は派生としてアクティブに従属させる。
+        const beforeActive = [];
+        const afterActive = [];
+        topLevelPassiveTexts.forEach((pt) => {
+          if (firstActiveEl && (firstActiveEl.compareDocumentPosition(pt) & Node.DOCUMENT_POSITION_PRECEDING)) {
+            beforeActive.push(pt);
+          } else {
+            afterActive.push(pt);
+          }
+        });
+
+        beforeActive.forEach((pt) => {
+          entries.push({
+            sourceEl: pt,
+            actor: actorName,
+            activeSkills: [],
+            passiveTree: buildPassiveTree(pt, 0, []),
+            chainSkills: [],
+            active: false,
+          });
+        });
+
+        const derivedTree = [];
+        afterActive.forEach((pt) => buildPassiveTree(pt, 1, derivedTree));
+        entries.push({
+          sourceEl: firstActiveEl || turnEl,
+          actor: actorName,
+          activeSkills: namesOf(activeEls),
+          passiveTree: derivedTree,
+          chainSkills: [],
+          active: true,
+        });
       });
 
       roundEl.querySelectorAll('section.passive-area section.passive-text > span.actor').forEach((actorSpan) => {
         const actorText = (actorSpan.textContent || '').trim();
         if (!actorText.endsWith(' の 自動行動！')) return;
+        const parentTurn = actorSpan.closest('section.turn');
+        const manualActor = parentTurn && parentTurn.querySelector(':scope > span.actor');
+        if (manualActor && (manualActor.textContent || '').trim().endsWith('の行動！')) return;
+
+        const ownPassiveText = actorSpan.parentElement;
+        if (closestPassiveTextAncestor(ownPassiveText)) return;
+
         const actorName = actorText.replace(/ の 自動行動！$/, '');
-        const scopeEl = actorSpan.parentElement;
-        const skills = [...scopeEl.querySelectorAll(':scope > .skill-name, :scope > .link-skill-name')]
-          .map(getStandardSkillName)
-          .filter(Boolean);
-        entries.push({ actor: actorName, skills: [...new Set(skills)], active: false });
+        entries.push({
+          sourceEl: ownPassiveText,
+          actor: actorName,
+          activeSkills: [],
+          passiveTree: buildPassiveTree(ownPassiveText, 0, []),
+          chainSkills: [],
+          active: false,
+        });
       });
 
       roundEl.querySelectorAll('section.link-action .link-text > span.actor').forEach((actorSpan) => {
         const actorText = (actorSpan.textContent || '').trim();
         const m = actorText.match(/^(.+?) と (.+?) のチェインスキル！$/);
         if (!m) return;
-        entries.push({ actor: m[1], skills: ['チェインスキル'], active: false });
-        entries.push({ actor: m[2], skills: ['チェインスキル'], active: false });
+        entries.push({ sourceEl: actorSpan, actor: m[1], activeSkills: [], passiveTree: [], chainSkills: ['チェインスキル'], active: false });
+        entries.push({ sourceEl: actorSpan, actor: m[2], activeSkills: [], passiveTree: [], chainSkills: ['チェインスキル'], active: false });
       });
+
+      // 収集した順（手動→自動→チェインスキル）ではなく、実際にログへ出現する順に並び替える。
+      entries.sort((a, b) => {
+        const pos = a.sourceEl.compareDocumentPosition(b.sourceEl);
+        if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+        if (pos & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+        return 0;
+      });
+      const count = entries.filter((e) => e.active).length;
 
       digest.push({
         label: (turns[turnIdx] && turns[turnIdx].label) || `T${turnIdx + 1}`,
-        count: entries.filter((e) => e.active).length,
+        count,
         entries,
       });
     });
@@ -323,14 +432,63 @@
       if (d.entries.length === 0) {
         listTd.textContent = '-';
       } else {
+        // 「自分行動前」型パッシブ＋アクティブ＋その派生パッシブを1つの行動ブロックとして
+        // まとめ、どのアクティブに対する前後関係かが見た目で分かるようにする。
+        const groups = [];
+        let current = [];
         d.entries.forEach((entry) => {
-          const line = document.createElement('div');
-          line.className = `lc-digest-entry ${entry.active ? 'lc-digest-active' : 'lc-digest-passive'}`;
-          const skillSpan = document.createElement('span');
-          skillSpan.className = 'lc-digest-skill';
-          skillSpan.textContent = entry.skills.length ? entry.skills.join(' / ') : '（不明）';
-          line.appendChild(skillSpan);
-          listTd.appendChild(line);
+          current.push(entry);
+          if (entry.active) {
+            groups.push(current);
+            current = [];
+          }
+        });
+        if (current.length) groups.push(current);
+
+        groups.forEach((group) => {
+          const groupEl = document.createElement('div');
+          groupEl.className = 'lc-digest-group';
+          group.forEach((entry) => {
+            const line = document.createElement('div');
+            line.className = 'lc-digest-entry';
+            const hasAny = entry.activeSkills.length || entry.passiveTree.length || entry.chainSkills.length;
+            if (!hasAny) {
+              const span = document.createElement('span');
+              span.className = 'lc-digest-skill';
+              span.textContent = '（不明）';
+              line.appendChild(span);
+            }
+            if (entry.activeSkills.length) {
+              const row = document.createElement('div');
+              row.className = 'lc-digest-row';
+              const span = document.createElement('span');
+              span.className = 'lc-digest-skill lc-digest-active-text';
+              span.textContent = entry.activeSkills.join(' / ');
+              row.appendChild(span);
+              line.appendChild(row);
+            }
+            entry.passiveTree.forEach((node) => {
+              const row = document.createElement('div');
+              row.className = 'lc-digest-row';
+              row.style.paddingLeft = `${node.depth * 14}px`;
+              const span = document.createElement('span');
+              span.className = 'lc-digest-skill lc-digest-passive-text';
+              span.textContent = node.name;
+              row.appendChild(span);
+              line.appendChild(row);
+            });
+            if (entry.chainSkills.length) {
+              const row = document.createElement('div');
+              row.className = 'lc-digest-row';
+              const span = document.createElement('span');
+              span.className = 'lc-digest-skill lc-digest-chain-text';
+              span.textContent = entry.chainSkills.join(' / ');
+              row.appendChild(span);
+              line.appendChild(row);
+            }
+            groupEl.appendChild(line);
+          });
+          listTd.appendChild(groupEl);
         });
       }
       tr.appendChild(listTd);
@@ -351,12 +509,9 @@
 
     const roundEls = document.querySelectorAll('section.round');
     roundEls.forEach((roundEl, turnIdx) => {
-      roundEl.querySelectorAll('section.turns > section.turn > span.actor').forEach((el) => {
-        const text = (el.textContent || '').trim();
-        if (!text.endsWith('の行動！')) return;
-        const name = namesByLength.find((n) => text === `${n}の行動！`);
-        if (!name) return;
-        const idx = nameToIndex[name];
+      roundEl.querySelectorAll('section.turns > section.turn').forEach((turnEl) => {
+        const idx = resolveManualActorIndex(turnEl, namesByLength, nameToIndex);
+        if (idx === null || idx === undefined) return;
         if (perTurn[idx] && perTurn[idx][turnIdx] !== undefined) perTurn[idx][turnIdx] += 1;
       });
     });
@@ -398,14 +553,10 @@
     });
 
     function addGrant(idx, turnIdx, statusName, amount) {
-      let key = nameToKey[statusName];
+      const key = nameToKey[statusName];
       if (!key) return;
-      if (DUAL_SIGN_KEYS[key] && amount < 0) {
-        key = DUAL_SIGN_KEYS[key];
-        amount = -amount;
-      }
       const bucket = perTurn[idx][turnIdx];
-      bucket[key] = (bucket[key] || 0) + amount;
+      bucket[key] = (bucket[key] || 0) + Math.abs(amount);
     }
 
     function extractGrants(resultEls) {
@@ -427,13 +578,8 @@
     const roundEls = document.querySelectorAll('section.round');
     roundEls.forEach((roundEl, turnIdx) => {
       roundEl.querySelectorAll('section.turns > section.turn').forEach((turnEl) => {
-        const actorSpan = turnEl.querySelector(':scope > span.actor');
-        if (!actorSpan) return;
-        const actorText = (actorSpan.textContent || '').trim();
-        if (!actorText.endsWith('の行動！')) return;
-        const name = namesByLength.find((n) => actorText === `${n}の行動！`);
-        if (!name) return;
-        const idx = nameToIndex[name];
+        const idx = resolveManualActorIndex(turnEl, namesByLength, nameToIndex);
+        if (idx === null || idx === undefined) return;
         const resultEls = [...turnEl.querySelectorAll('.result')]
           .filter((el) => !el.closest('.passive-text') && !el.closest('.link-text'));
         extractGrants(resultEls).forEach((ev) => addGrant(idx, turnIdx, ev.name, ev.num));
@@ -454,6 +600,35 @@
     return { perTurn };
   }
 
+  function collectDamageGiven(units, turns) {
+    const { nameToIndex, namesByLength } = buildNameIndex(units);
+
+    const perTurn = {};
+    Object.values(units).forEach((u) => {
+      perTurn[u.index] = turns.map(() => 0);
+    });
+
+    const roundEls = document.querySelectorAll('section.round');
+    roundEls.forEach((roundEl, turnIdx) => {
+      roundEl.querySelectorAll('section.turns > section.turn').forEach((turnEl) => {
+        const idx = resolveManualActorIndex(turnEl, namesByLength, nameToIndex);
+        if (idx === null || idx === undefined) return;
+        turnEl.querySelectorAll('.result').forEach((el) => {
+          if (el.closest('.passive-text') || el.closest('.link-text')) return;
+          const text = (el.textContent || '').trim();
+          if (!text.includes('のダメージを受けた！')) return;
+          const span = el.querySelector('span[class*="damage"]');
+          if (!span) return;
+          const num = parseInt(span.textContent, 10);
+          if (Number.isNaN(num)) return;
+          if (perTurn[idx] && perTurn[idx][turnIdx] !== undefined) perTurn[idx][turnIdx] += num;
+        });
+      });
+    });
+
+    return { perTurn };
+  }
+
   function collectHealGiven(units, turns) {
     const { nameToIndex, namesByLength } = buildNameIndex(units);
 
@@ -465,13 +640,8 @@
     const roundEls = document.querySelectorAll('section.round');
     roundEls.forEach((roundEl, turnIdx) => {
       roundEl.querySelectorAll('section.turns > section.turn').forEach((turnEl) => {
-        const actorSpan = turnEl.querySelector(':scope > span.actor');
-        if (!actorSpan) return;
-        const actorText = (actorSpan.textContent || '').trim();
-        if (!actorText.endsWith('の行動！')) return;
-        const name = namesByLength.find((n) => actorText === `${n}の行動！`);
-        if (!name) return;
-        const idx = nameToIndex[name];
+        const idx = resolveManualActorIndex(turnEl, namesByLength, nameToIndex);
+        if (idx === null || idx === undefined) return;
         turnEl.querySelectorAll('.result').forEach((el) => {
           const text = (el.textContent || '').trim();
           if (!text.includes('回復した！')) return;
@@ -679,7 +849,125 @@
    * 4. ユニットごとのターン推移テーブル
    * ========================================================================= */
 
-  const SP_MAX = 300;
+  // buildUnitTurnTableA / buildUnitTurnTableD 共通のテーブル描画処理。
+  // ターン/行動数/SP/悪計/良計 の共通列と、状態別の列(columns)を持つテーブルを生成する。
+  // getBucket(turn, turnIdx) は、そのターンにおける状態別データ(キー→値)を返す関数。
+  // onCellExtra(td, col, turnIdx) は状態列セルを描画した直後に呼ばれる追加処理(任意)。
+  function buildStatusTurnTable(unit, turns, columns, perTurnActionCount, getBucket, onCellExtra) {
+    const table = document.createElement('table');
+    table.className = 'lc-turn-table';
+
+    const thead = document.createElement('thead');
+    const headRow = document.createElement('tr');
+
+    const turnTh = document.createElement('th');
+    turnTh.textContent = 'ターン';
+    headRow.appendChild(turnTh);
+
+    appendHeaderCell(headRow, makeSimpleHeaderLabel('行動数', 'info'));
+
+    const spTh = document.createElement('th');
+    spTh.textContent = 'SP';
+    headRow.appendChild(spTh);
+
+    appendHeaderCell(headRow, makeSimpleHeaderLabel('悪計', 'bad'));
+    appendHeaderCell(headRow, makeSimpleHeaderLabel('良計', 'good'));
+
+    columns.forEach((col) => {
+      const th = document.createElement('th');
+      th.appendChild(makeStatusHeaderLabel(col.sign < 0 ? DUAL_SIGN_KEYS[col.key] : col.key));
+      headRow.appendChild(th);
+    });
+
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    const maxByCol = {};
+    columns.forEach((col) => {
+      const vals = turns
+        .map((t, i) => { const b = getBucket(t, i); return b && b[col.key]; })
+        .filter((v) => v !== undefined && v !== null)
+        .filter((v) => (col.sign === 0 ? true : col.sign > 0 ? v > 0 : v < 0))
+        .map(Math.abs);
+      maxByCol[col.id] = Math.max(1, ...vals, 0);
+    });
+    const maxActionCount = Math.max(1, ...perTurnActionCount);
+    const cumulativeActionCount = perTurnActionCount.reduce((acc, v) => {
+      acc.push((acc.length ? acc[acc.length - 1] : 0) + v);
+      return acc;
+    }, []);
+    const polarityByTurn = turns.map((t, i) => sumStatusPolarity(getBucket(t, i)));
+    const maxGood = Math.max(1, ...polarityByTurn.map((p) => p.good));
+    const maxBad = Math.max(1, ...polarityByTurn.map((p) => p.bad));
+
+    const tbody = document.createElement('tbody');
+    turns.forEach((t, turnIdx) => {
+      const bucket = getBucket(t, turnIdx);
+      const tr = document.createElement('tr');
+
+      const turnTd = document.createElement('th');
+      turnTd.className = 'lc-turn-label-cell';
+      turnTd.textContent = t.label;
+      tr.appendChild(turnTd);
+
+      const actionCountTd = document.createElement('td');
+      const actCount = perTurnActionCount[turnIdx] || 0;
+      actionCountTd.textContent = String(actCount);
+      if (actCount >= 2) actionCountTd.style.background = heatColor(actCount, maxActionCount, 'info');
+      actionCountTd.setAttribute('data-lc-tooltip', `累計: ${cumulativeActionCount[turnIdx]}行動`);
+      tr.appendChild(actionCountTd);
+
+      const spTd = document.createElement('td');
+      const obj = t.byUnit[unit.index];
+      if (obj && obj.s !== undefined) {
+        const slv = Math.max(0, Math.min(3, Math.floor(obj.s / 100)));
+        spTd.textContent = String(obj.s);
+        spTd.classList.add(`lc-slv-${slv}`);
+      } else {
+        spTd.textContent = '-';
+      }
+      tr.appendChild(spTd);
+
+      const polarity = polarityByTurn[turnIdx];
+      const badTd = document.createElement('td');
+      badTd.textContent = polarity.bad ? String(polarity.bad) : '-';
+      if (polarity.bad) badTd.style.background = heatColor(polarity.bad, maxBad, 'bad');
+      tr.appendChild(badTd);
+
+      const goodTd = document.createElement('td');
+      goodTd.textContent = polarity.good ? String(polarity.good) : '-';
+      if (polarity.good) goodTd.style.background = heatColor(polarity.good, maxGood, 'good');
+      tr.appendChild(goodTd);
+
+      columns.forEach((col) => {
+        const td = document.createElement('td');
+        const raw = bucket && bucket[col.key] !== undefined ? bucket[col.key] : null;
+        let v = raw;
+        if (raw !== null && col.sign !== 0) {
+          v = (col.sign > 0 ? raw > 0 : raw < 0) ? raw : null;
+        }
+        if (v === null) {
+          td.textContent = '-';
+        } else {
+          const displayVal = Math.abs(v);
+          const kind = col.sign < 0 ? defFor(DUAL_SIGN_KEYS[col.key]).kind : defFor(col.key).kind;
+          td.textContent = String(displayVal);
+          td.style.background = heatColor(displayVal, maxByCol[col.id], kind);
+          if (col.sign < 0) {
+            const negDef = defFor(DUAL_SIGN_KEYS[col.key]);
+            td.setAttribute('data-lc-tooltip', `${negDef.name}\n${negDef.desc}`);
+          }
+        }
+        if (onCellExtra) onCellExtra(td, col, turnIdx);
+        tr.appendChild(td);
+      });
+
+      tbody.appendChild(tr);
+    });
+
+    table.appendChild(tbody);
+    return table;
+  }
 
   function buildUnitTurnTableA(unit, turns, peaceHeatGains, actionCounts) {
     const seenKeysRaw = [];
@@ -704,104 +992,23 @@
     const perTurnPeaceGain = (peaceHeatGains && peaceHeatGains.perTurn[unit.index]) || turns.map(() => 0);
     const perTurnActionCount = (actionCounts && actionCounts.perTurn[unit.index]) || turns.map(() => 0);
 
-    const table = document.createElement('table');
-    table.className = 'lc-turn-table';
-
-    const thead = document.createElement('thead');
-    const headRow = document.createElement('tr');
-
-    const turnTh = document.createElement('th');
-    turnTh.textContent = 'ターン';
-    headRow.appendChild(turnTh);
-
-    appendHeaderCell(headRow, makeSimpleHeaderLabel('行動数', 'info'));
-
-    const spTh = document.createElement('th');
-    spTh.textContent = 'SP';
-    headRow.appendChild(spTh);
-
-    columns.forEach((col) => {
-      const th = document.createElement('th');
-      th.appendChild(makeStatusHeaderLabel(col.sign < 0 ? DUAL_SIGN_KEYS[col.key] : col.key));
-      headRow.appendChild(th);
-    });
-
-    thead.appendChild(headRow);
-    table.appendChild(thead);
-
-    const maxByCol = {};
-    columns.forEach((col) => {
-      const vals = turns
-        .map((t) => t.byUnit[unit.index] && t.byUnit[unit.index][col.key])
-        .filter((v) => v !== undefined && v !== null)
-        .filter((v) => (col.sign === 0 ? true : col.sign > 0 ? v > 0 : v < 0))
-        .map(Math.abs);
-      maxByCol[col.id] = Math.max(1, ...vals, 0);
-    });
-    const maxActionCount = Math.max(1, ...perTurnActionCount);
-
-    const tbody = document.createElement('tbody');
-    turns.forEach((t, turnIdx) => {
-      const obj = t.byUnit[unit.index];
-      const tr = document.createElement('tr');
-
-      const turnTd = document.createElement('th');
-      turnTd.className = 'lc-turn-label-cell';
-      turnTd.textContent = t.label;
-      tr.appendChild(turnTd);
-
-      const actionCountTd = document.createElement('td');
-      const actCount = perTurnActionCount[turnIdx] || 0;
-      actionCountTd.textContent = String(actCount);
-      if (actCount >= 2) actionCountTd.style.background = heatColor(actCount, maxActionCount, 'info');
-      tr.appendChild(actionCountTd);
-
-      const spTd = document.createElement('td');
-      if (obj && obj.s !== undefined) {
-        const slv = Math.max(0, Math.min(3, Math.floor(obj.s / 100)));
-        spTd.textContent = String(obj.s);
-        spTd.classList.add(`lc-slv-${slv}`);
-      } else {
-        spTd.textContent = '-';
-      }
-      tr.appendChild(spTd);
-
-      columns.forEach((col) => {
-        const td = document.createElement('td');
-        const raw = obj && obj[col.key] !== undefined ? obj[col.key] : null;
-        let v = raw;
-        if (raw !== null && col.sign !== 0) {
-          v = (col.sign > 0 ? raw > 0 : raw < 0) ? raw : null;
-        }
-        if (v === null) {
-          td.textContent = '-';
-        } else {
-          const displayVal = Math.abs(v);
-          const kind = col.sign < 0 ? defFor(DUAL_SIGN_KEYS[col.key]).kind : defFor(col.key).kind;
-          td.textContent = String(displayVal);
-          td.style.background = heatColor(displayVal, maxByCol[col.id], kind);
-          if (col.sign < 0) {
-            const negDef = defFor(DUAL_SIGN_KEYS[col.key]);
-            td.setAttribute('data-lc-tooltip', `${negDef.name}\n${negDef.desc}`);
-          }
-        }
+    return buildStatusTurnTable(
+      unit,
+      turns,
+      columns,
+      perTurnActionCount,
+      (t) => t.byUnit[unit.index],
+      (td, col, turnIdx) => {
         if (col.key === 'pe') {
           const gain = perTurnPeaceGain[turnIdx] || 0;
           if (gain) {
             td.setAttribute('data-lc-tooltip', `連続増: +${gain}`);
           }
         }
-        tr.appendChild(td);
-      });
-
-      tbody.appendChild(tr);
-    });
-
-    table.appendChild(tbody);
-    return table;
+      }
+    );
   }
 
-  // D面：状態異常[与]（自身の行動で他者/自身に付与した状態異常・バフデバフの量）
   function buildUnitTurnTableD(unit, turns, grantedStatus, actionCounts) {
     const perTurnGrant = (grantedStatus && grantedStatus.perTurn[unit.index]) || turns.map(() => ({}));
 
@@ -809,117 +1016,28 @@
     perTurnGrant.forEach((bucket) => {
       Object.keys(bucket).forEach((k) => { if (!seenKeysRaw.includes(k)) seenKeysRaw.push(k); });
     });
-    const seenKeys = sortByRulebookOrder([...new Set([...STATUS_ORDER, ...seenKeysRaw])]);
-    const columns = [];
-    seenKeys.forEach((key) => {
-      if (DUAL_SIGN_KEYS[key]) {
-        columns.push({ id: `${key}:pos`, key, sign: 1 });
-        columns.push({ id: `${key}:neg`, key, sign: -1 });
-      } else {
-        columns.push({ id: key, key, sign: 0 });
-      }
-    });
+    const GRANT_FORCED_KEYS = ['au', 'du', 'spd'];
+    const seenKeys = sortByRulebookOrder([...new Set([...GRANT_STATUS_ORDER, ...GRANT_FORCED_KEYS, ...seenKeysRaw])], GRANT_STATUS_ORDER);
+    const columns = seenKeys.map((key) => ({ id: key, key, sign: 0 }));
     const perTurnActionCount = (actionCounts && actionCounts.perTurn[unit.index]) || turns.map(() => 0);
 
-    const table = document.createElement('table');
-    table.className = 'lc-turn-table';
-
-    const thead = document.createElement('thead');
-    const headRow = document.createElement('tr');
-
-    const turnTh = document.createElement('th');
-    turnTh.textContent = 'ターン';
-    headRow.appendChild(turnTh);
-
-    appendHeaderCell(headRow, makeSimpleHeaderLabel('行動数', 'info'));
-
-    const spTh = document.createElement('th');
-    spTh.textContent = 'SP';
-    headRow.appendChild(spTh);
-
-    columns.forEach((col) => {
-      const th = document.createElement('th');
-      th.appendChild(makeStatusHeaderLabel(col.sign < 0 ? DUAL_SIGN_KEYS[col.key] : col.key));
-      headRow.appendChild(th);
-    });
-
-    thead.appendChild(headRow);
-    table.appendChild(thead);
-
-    const maxByCol = {};
-    columns.forEach((col) => {
-      const vals = perTurnGrant
-        .map((bucket) => bucket[col.key])
-        .filter((v) => v !== undefined && v !== null)
-        .filter((v) => (col.sign === 0 ? true : col.sign > 0 ? v > 0 : v < 0))
-        .map(Math.abs);
-      maxByCol[col.id] = Math.max(1, ...vals, 0);
-    });
-    const maxActionCount = Math.max(1, ...perTurnActionCount);
-
-    const tbody = document.createElement('tbody');
-    turns.forEach((t, turnIdx) => {
-      const bucket = perTurnGrant[turnIdx] || {};
-      const tr = document.createElement('tr');
-
-      const turnTd = document.createElement('th');
-      turnTd.className = 'lc-turn-label-cell';
-      turnTd.textContent = t.label;
-      tr.appendChild(turnTd);
-
-      const actionCountTd = document.createElement('td');
-      const actCount = perTurnActionCount[turnIdx] || 0;
-      actionCountTd.textContent = String(actCount);
-      if (actCount >= 2) actionCountTd.style.background = heatColor(actCount, maxActionCount, 'info');
-      tr.appendChild(actionCountTd);
-
-      const spTd = document.createElement('td');
-      const obj = t.byUnit[unit.index];
-      if (obj && obj.s !== undefined) {
-        const slv = Math.max(0, Math.min(3, Math.floor(obj.s / 100)));
-        spTd.textContent = String(obj.s);
-        spTd.classList.add(`lc-slv-${slv}`);
-      } else {
-        spTd.textContent = '-';
-      }
-      tr.appendChild(spTd);
-
-      columns.forEach((col) => {
-        const td = document.createElement('td');
-        const raw = bucket[col.key] !== undefined ? bucket[col.key] : null;
-        let v = raw;
-        if (raw !== null && col.sign !== 0) {
-          v = (col.sign > 0 ? raw > 0 : raw < 0) ? raw : null;
-        }
-        if (v === null) {
-          td.textContent = '-';
-        } else {
-          const displayVal = Math.abs(v);
-          const kind = col.sign < 0 ? defFor(DUAL_SIGN_KEYS[col.key]).kind : defFor(col.key).kind;
-          td.textContent = String(displayVal);
-          td.style.background = heatColor(displayVal, maxByCol[col.id], kind);
-          if (col.sign < 0) {
-            const negDef = defFor(DUAL_SIGN_KEYS[col.key]);
-            td.setAttribute('data-lc-tooltip', `${negDef.name}\n${negDef.desc}`);
-          }
-        }
-        tr.appendChild(td);
-      });
-
-      tbody.appendChild(tr);
-    });
-
-    table.appendChild(tbody);
-    return table;
+    return buildStatusTurnTable(
+      unit,
+      turns,
+      columns,
+      perTurnActionCount,
+      (t, turnIdx) => perTurnGrant[turnIdx] || {}
+    );
   }
 
-  function buildUnitTurnTableB(unit, turns, hitCounts, hpChanges, actionCounts, healGiven, maxHpByIndex) {
+  function buildUnitTurnTableB(unit, turns, hitCounts, hpChanges, actionCounts, healGiven, maxHpByIndex, damageGiven) {
     const perTurnHits = (hitCounts && hitCounts.perTurn[unit.index]) || turns.map(() => 0);
     const perTurnHit = (hpChanges && hpChanges.dmgHitPerTurn[unit.index]) || turns.map(() => 0);
     const perTurnPoison = (hpChanges && hpChanges.dmgPoisonPerTurn[unit.index]) || turns.map(() => 0);
     const perTurnHealSkill = (hpChanges && hpChanges.healSkillPerTurn[unit.index]) || turns.map(() => 0);
     const perTurnHealTick = (hpChanges && hpChanges.healTickPerTurn[unit.index]) || turns.map(() => 0);
     const perTurnHealGiven = (healGiven && healGiven.perTurn[unit.index]) || turns.map(() => 0);
+    const perTurnDamageGiven = (damageGiven && damageGiven.perTurn[unit.index]) || turns.map(() => 0);
     const perTurnActionCount = (actionCounts && actionCounts.perTurn[unit.index]) || turns.map(() => 0);
     const perTurnActualDrop = turns.map((t, i) => {
       const cur = t.byUnit[unit.index] && t.byUnit[unit.index].h;
@@ -946,6 +1064,7 @@
     headRow.appendChild(spTh);
 
     appendHeaderCell(headRow, makeSimpleHeaderLabel('HP', 'info'));
+    appendHeaderCell(headRow, makeSimpleHeaderLabel('与ダメ', 'bad'));
     appendHeaderCell(headRow, makeSimpleHeaderLabel('与回復', 'good'));
     appendHeaderCell(headRow, makeSimpleHeaderLabel('被回復', 'good'));
     appendHeaderCell(headRow, makeSimpleHeaderLabel('治癒', 'good'));
@@ -962,7 +1081,12 @@
     const maxHitDmg = Math.max(1, ...perTurnHit);
     const maxPoisonDmg = Math.max(1, ...perTurnPoison);
     const maxHitCount = Math.max(1, ...perTurnHits);
+    const maxDamageGiven = Math.max(1, ...perTurnDamageGiven);
     const maxActionCount = Math.max(1, ...perTurnActionCount);
+    const cumulativeActionCount = perTurnActionCount.reduce((acc, v) => {
+      acc.push((acc.length ? acc[acc.length - 1] : 0) + v);
+      return acc;
+    }, []);
     const maxDecrease = Math.max(1, ...perTurnActualDrop);
 
     const tbody = document.createElement('tbody');
@@ -979,6 +1103,7 @@
       const actCount = perTurnActionCount[turnIdx] || 0;
       actionCountTd.textContent = String(actCount);
       if (actCount >= 2) actionCountTd.style.background = heatColor(actCount, maxActionCount, 'info');
+      actionCountTd.setAttribute('data-lc-tooltip', `累計: ${cumulativeActionCount[turnIdx]}行動`);
       tr.appendChild(actionCountTd);
 
       const spTd = document.createElement('td');
@@ -1003,6 +1128,12 @@
       }
       if (mhp !== undefined) hpTd.setAttribute('data-lc-tooltip', `MHP: ${mhp}`);
       tr.appendChild(hpTd);
+
+      const damageGivenTd = document.createElement('td');
+      const damageGivenVal = perTurnDamageGiven[turnIdx] || 0;
+      damageGivenTd.textContent = damageGivenVal ? String(damageGivenVal) : '-';
+      if (damageGivenVal) damageGivenTd.style.background = heatColor(damageGivenVal, maxDamageGiven, 'bad');
+      tr.appendChild(damageGivenTd);
 
       const healGivenTd = document.createElement('td');
       const healGivenVal = perTurnHealGiven[turnIdx] || 0;
@@ -1087,6 +1218,7 @@
     const actionCounts = collectActionCounts(units, turns);
     const hpChanges = collectHpChanges(units, turns);
     const healGiven = collectHealGiven(units, turns);
+    const damageGiven = collectDamageGiven(units, turns);
     const grantedStatus = collectGrantedStatus(units, turns);
     const maxHpByIndex = collectMaxHp(units);
     const skillMap = collectSkillBreakdown();
@@ -1155,7 +1287,7 @@
 
       const panelB = document.createElement('div');
       panelB.className = 'lc-panel lc-panel-b';
-      panelB.appendChild(buildUnitTurnTableB(unit, turns, hitCounts, hpChanges, actionCounts, healGiven, maxHpByIndex));
+      panelB.appendChild(buildUnitTurnTableB(unit, turns, hitCounts, hpChanges, actionCounts, healGiven, maxHpByIndex, damageGiven));
 
       const panelC = document.createElement('div');
       panelC.className = 'lc-panel lc-panel-c';
@@ -1197,13 +1329,6 @@
     });
 
     relabelSkillNameCells(collectSkillNameMap());
-
-    const wrapEl = table.closest('.battle-summary-table-wrap');
-    if (wrapEl && !wrapEl.querySelector('.lc-summary-note')) {
-      const note = document.createElement('p');
-      note.className = 'lc-summary-note';
-      wrapEl.insertBefore(note, wrapEl.firstChild);
-    }
   }
 
   function attachSkillBreakdownRow(row, colCount, skillMap) {
@@ -1334,17 +1459,15 @@
   function injectStyle() {
     const style = document.createElement('style');
     style.textContent = `
-      section.turns > section.turn,
-      section.passive-area > section.checkactions {
+      section.turn.lc-divider-solid {
         border-top: 1px solid rgba(255,255,255,0.15);
         margin-top: 14px;
         padding-top: 14px;
       }
-      section.turns > section.turn:first-child,
-      section.passive-area > section.checkactions:first-child {
-        border-top: none;
-        margin-top: 0;
-        padding-top: 0;
+      section.checkactions.lc-divider-dashed {
+        border-top: 1px dashed rgba(255,255,255,0.12);
+        margin-top: 14px;
+        padding-top: 14px;
       }
 
       .lc-sp-value { font-size: 0.85em; opacity: 0.9; }
@@ -1359,10 +1482,6 @@
       .lc-heat-value-prefix { opacity: 0.7; }
       .lc-heat-value-num { font-weight: bold; }
 
-      .lc-summary-note {
-        font-size: 0.85em; opacity: 0.8; margin: 4px 0 10px;
-      }
-
       tr.lc-turn-row { display: none; }
       tr.lc-turn-row.lc-open { display: table-row; }
       tr.lc-turn-row:hover > td.lc-turn-cell,
@@ -1374,11 +1493,15 @@
       td.lc-turn-cell { background: rgba(0,0,0,0.15); padding: 10px 12px; cursor: default; }
       .lc-turn-caption { font-weight: bold; font-size: 1em; margin-bottom: 8px; }
       .lc-digest-table td.lc-digest-list { text-align: left; padding: 6px 10px; }
-      .lc-digest-entry { padding: 2px 6px; border-left: 3px solid transparent; }
+      .lc-digest-entry { padding: 2px 6px; }
       .lc-digest-entry + .lc-digest-entry { border-top: 1px dashed rgba(255,255,255,0.1); }
-      .lc-digest-entry.lc-digest-active { border-left-color: rgba(230,150,60,0.85); background: rgba(230,150,60,0.08); }
-      .lc-digest-entry.lc-digest-passive { border-left-color: rgba(90,150,220,0.85); background: rgba(90,150,220,0.08); }
-      .lc-digest-skill { opacity: 0.9; }
+      .lc-digest-row { display: flex; gap: 6px; align-items: baseline; }
+      .lc-digest-group { padding: 4px 0; }
+      .lc-digest-group + .lc-digest-group { border-top: 2px solid rgba(255,255,255,0.22); margin-top: 2px; }
+      .lc-digest-active-text { color: #f0a860; }
+      .lc-digest-passive-text { color: #7fb0e6; }
+      .lc-digest-chain-text { color: #d888e0; }
+      .lc-digest-skill { opacity: 0.95; }
       .lc-panel-tabbar { display: flex; gap: 6px; margin-bottom: 8px; }
       .lc-panel-tab {
         font-family: inherit;
@@ -1391,6 +1514,14 @@
         cursor: pointer;
       }
       .lc-panel-tab:hover { background: rgba(255,255,255,0.12); }
+
+      .lc-action-jump-source { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+      .lc-action-jump-source:hover { color: #ffd166; }
+      .lc-jump-highlight { animation: lc-jump-flash 1.2s ease; }
+      @keyframes lc-jump-flash {
+        0% { background-color: rgba(255, 220, 90, 0.55); }
+        100% { background-color: transparent; }
+      }
       .lc-panel-tab.lc-active {
         background: rgba(80,150,255,0.35);
         border-color: rgba(80,150,255,0.7);
@@ -1508,15 +1639,103 @@
     document.head.appendChild(style);
   }
 
+  function markAutoActionDividers() {
+    const blocks = [];
+    document.querySelectorAll('section.turns > section.turn, section.passive-area section.checkactions').forEach((el) => {
+      if (el.matches('section.turn')) {
+        blocks.push({ el, type: 'turn' });
+        return;
+      }
+      const parentTurn = el.closest('section.turn');
+      if (parentTurn && parentTurn.querySelector('section.checkactions') === el) return;
+      const actorSpan = el.querySelector(':scope > section.passive-text > span.actor');
+      const actor = actorSpan ? actorSpan.textContent.trim() : null;
+      blocks.push({ el, type: 'auto', actor });
+    });
+
+    let prevActor = null;
+    blocks.forEach((block, i) => {
+      if (i > 0) {
+        if (block.type === 'turn') {
+          block.el.classList.add('lc-divider-solid');
+        } else if (!(block.actor && block.actor === prevActor)) {
+          block.el.classList.add('lc-divider-dashed');
+        }
+      }
+      prevActor = block.type === 'auto' ? block.actor : null;
+    });
+  }
+
+  function injectActionJumpLinks() {
+    const actorSpans = [...document.querySelectorAll('section.turns > section.turn > span.actor')]
+      .filter((el) => (el.textContent || '').trim().endsWith('の行動！'));
+
+    function resolveTargetInfo(actorSpan) {
+      const turnEl = actorSpan.closest('section.turn');
+      const roundEl = actorSpan.closest('section.round');
+      const checkactions = turnEl && turnEl.querySelector('section.checkactions[id]');
+      const markEl = roundEl && roundEl.querySelector('.round-count[id^="round"]');
+      if (!checkactions || !markEl) return null;
+      const roundNum = parseInt(markEl.textContent, 10);
+      if (Number.isNaN(roundNum)) return null;
+      return { roundNum, targetId: checkactions.id };
+    }
+
+    const byName = {};
+    actorSpans.forEach((el) => {
+      const name = el.textContent.trim().replace(/の行動！$/, '');
+      const info = resolveTargetInfo(el);
+      if (!info) return;
+      (byName[name] = byName[name] || []).push({ el, ...info });
+    });
+
+    function highlight(el) {
+      const target = el.closest('section.turn') || el;
+      target.classList.add('lc-jump-highlight');
+      setTimeout(() => target.classList.remove('lc-jump-highlight'), 1200);
+    }
+
+    function jumpTo(info) {
+      const el = document.getElementById(info.targetId);
+      if (!el) return;
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      highlight(el);
+    }
+
+    Object.values(byName).forEach((list) => {
+      if (list.length < 2) return;
+      list.forEach((entry, i) => {
+        if (i >= list.length - 1) return;
+        entry.el.classList.add('lc-action-jump-source');
+        entry.el.title = '次の自分の行動へジャンプ';
+        entry.el.addEventListener('click', (e) => {
+          e.stopPropagation();
+          jumpTo(list[i + 1]);
+        });
+      });
+    });
+  }
+
   /* =========================================================================
    * 7. 実行
    * ========================================================================= */
 
   function init() {
-    injectStyle();
-    setupTooltipSystem();
-    setupLeftPanelNumbers();
-    integrateIntoBattleSummary();
+    const steps = [
+      ['injectStyle', injectStyle],
+      ['setupTooltipSystem', setupTooltipSystem],
+      ['setupLeftPanelNumbers', setupLeftPanelNumbers],
+      ['integrateIntoBattleSummary', integrateIntoBattleSummary],
+      ['markAutoActionDividers', markAutoActionDividers],
+      ['injectActionJumpLinks', injectActionJumpLinks],
+    ];
+    steps.forEach(([name, fn]) => {
+      try {
+        fn();
+      } catch (e) {
+        console.error(`[戦闘解析拡張] ${name} でエラーが発生しました:`, e);
+      }
+    });
   }
 
   init();
